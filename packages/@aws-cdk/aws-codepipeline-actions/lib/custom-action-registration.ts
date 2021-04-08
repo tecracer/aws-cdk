@@ -1,5 +1,8 @@
-import codepipeline = require('@aws-cdk/aws-codepipeline');
-import cdk = require('@aws-cdk/core');
+import * as codepipeline from '@aws-cdk/aws-codepipeline';
+
+// keep this import separate from other imports to reduce chance for merge conflicts with v2-main
+// eslint-disable-next-line no-duplicate-imports, import/order
+import { Construct } from '@aws-cdk/core';
 
 /**
  * The creation attributes used for defining a configuration property
@@ -19,9 +22,6 @@ export interface CustomActionProperty {
    */
   description?: string;
 
-  // because of @see URLs
-  // tslint:disable:max-line-length
-
   /**
    * Whether this property is a key.
    *
@@ -38,8 +38,6 @@ export interface CustomActionProperty {
    * @see https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-codepipeline-customactiontype-configurationproperties.html#cfn-codepipeline-customactiontype-configurationproperties-queryable
    */
   queryable?: boolean;
-
-  // tslint:enable:max-line-length
 
   /**
    * Whether this property is required.
@@ -114,8 +112,8 @@ export interface CustomActionRegistrationProps {
  * representing your custom Action, extending the Action class,
  * and taking the `actionProperties` as properly typed, construction properties.
  */
-export class CustomActionRegistration extends cdk.Construct {
-  constructor(parent: cdk.Construct, id: string, props: CustomActionRegistrationProps) {
+export class CustomActionRegistration extends Construct {
+  constructor(parent: Construct, id: string, props: CustomActionRegistrationProps) {
     super(parent, id);
 
     new codepipeline.CfnCustomActionType(this, 'Resource', {
@@ -134,11 +132,13 @@ export class CustomActionRegistration extends cdk.Construct {
         entityUrlTemplate: props.entityUrl,
         executionUrlTemplate: props.executionUrl,
       },
-      configurationProperties: props.actionProperties === undefined ? undefined : props.actionProperties.map((ap) => { return {
-        key: ap.key || false,
-        secret: ap.secret || false,
-        ...ap,
-      }; }),
+      configurationProperties: props.actionProperties?.map((ap) => {
+        return {
+          key: ap.key || false,
+          secret: ap.secret || false,
+          ...ap,
+        };
+      }),
     });
   }
 }

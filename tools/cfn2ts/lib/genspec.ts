@@ -3,13 +3,14 @@
 // Does not include the actual code generation itself.
 
 import { schema } from '@aws-cdk/cfnspec';
-import codemaker = require('codemaker');
+import * as codemaker from 'codemaker';
 import { itemTypeNames, PropertyAttributeName, scalarTypeNames, SpecName } from './spec-utils';
-import util = require('./util');
+import * as util from './util';
 
 const RESOURCE_CLASS_PREFIX = 'Cfn';
 
 export const CORE_NAMESPACE = 'cdk';
+export const CFN_PARSE_NAMESPACE = 'cfn_parse';
 
 /**
  * The name of a class or method in the generated code.
@@ -42,14 +43,15 @@ export class CodeName {
     return new CodeName('', '', primitiveName);
   }
 
-  // tslint:disable:no-shadowed-variable
-  constructor(readonly packageName: string,
-              readonly namespace: string,
-              readonly className: string,
-              readonly specName?: SpecName,
-              readonly methodName?: string) {
+  /* eslint-disable @typescript-eslint/no-shadow */
+  constructor(
+    readonly packageName: string,
+    readonly namespace: string,
+    readonly className: string,
+    readonly specName?: SpecName,
+    readonly methodName?: string) {
   }
-  // tslint:enable:no-shadowed-variable
+  /* eslint-enable @typescript-eslint/no-shadow */
 
   /**
    * Alias for className
@@ -149,6 +151,28 @@ export function cfnMapperName(typeName: CodeName): CodeName {
 }
 
 /**
+ * Return the name of the function that converts a pure CloudFormation value
+ * to the appropriate CDK struct instance.
+ */
+export function fromCfnFactoryName(typeName: CodeName): CodeName {
+  if (isPrimitive(typeName)) {
+    // primitive types are handled by specialized functions from @aws-cdk/core
+    return new CodeName('', CFN_PARSE_NAMESPACE, 'FromCloudFormation', undefined, `get${util.upcaseFirst(typeName.className)}`);
+  } else if (isCloudFormationTagCodeName(typeName)) {
+    // tags, since they are shared, have their own function in @aws-cdk/core
+    return new CodeName('', CFN_PARSE_NAMESPACE, 'FromCloudFormation', undefined, 'getCfnTag');
+  } else {
+    return new CodeName(typeName.packageName, '', `${typeName.namespace}${typeName.className}FromCloudFormation`);
+  }
+}
+
+function isCloudFormationTagCodeName(codeName: CodeName): boolean {
+  return codeName.className === TAG_NAME.className &&
+    codeName.packageName === TAG_NAME.packageName &&
+    codeName.namespace === TAG_NAME.namespace;
+}
+
+/**
  * Return the name for the type-checking method
  */
 export function validatorName(typeName: CodeName): CodeName {
@@ -172,7 +196,7 @@ export function validatorName(typeName: CodeName): CodeName {
 export function attributeDefinition(attributeName: string, spec: schema.Attribute): Attribute {
   const descriptiveName = attributeName.replace(/\./g, '');
   const suffixName = codemaker.toPascalCase(cloudFormationToScriptName(descriptiveName));
-  const propertyName = `attr${suffixName}`;      // "attrArn"
+  const propertyName = `attr${suffixName}`; // "attrArn"
 
   let attrType: string;
   if ('PrimitiveType' in spec && spec.PrimitiveType === 'String') {
@@ -182,7 +206,7 @@ export function attributeDefinition(attributeName: string, spec: schema.Attribut
   } else if ('Type' in spec && 'PrimitiveItemType' in spec && spec.Type === 'List' && spec.PrimitiveItemType === 'String') {
     attrType = 'string[]';
   } else {
-    // tslint:disable-next-line:no-console
+    // eslint-disable-next-line no-console
     console.error(`WARNING: Unable to represent attribute type ${JSON.stringify(spec)} as a native type`);
     attrType = TOKEN_NAME.fqn;
   }
@@ -204,6 +228,7 @@ export function cloudFormationToScriptName(name: string): string {
   if (name === 'VPCs') { return 'vpcs'; }
   const ret = codemaker.toCamelCase(name);
 
+  // eslint-disable-next-line @typescript-eslint/naming-convention
   const suffixes: { [key: string]: string } = { ARNs: 'Arns', MBs: 'MBs', AZs: 'AZs' };
 
   for (const suffix of Object.keys(suffixes)) {
@@ -237,6 +262,10 @@ export function isPrimitive(type: CodeName): boolean {
 }
 
 function specTypeToCodeType(resourceContext: CodeName, type: string): CodeName {
+  if (type.endsWith('[]')) {
+    const itemType = specTypeToCodeType(resourceContext, type.substr(0, type.length - 2));
+    return CodeName.forPrimitive(`${itemType.className}[]`);
+  }
   if (schema.isPrimitiveType(type)) {
     return specPrimitiveToCodePrimitive(type);
   } else if (type === 'Tag') {
@@ -257,24 +286,72 @@ export function specTypesToCodeTypes(resourceContext: CodeName, types: string[])
 }
 
 export interface PropertyVisitor<T> {
-  visitScalar(type: CodeName): T;
-  visitUnionScalar(types: CodeName[]): T;
+
+  /**
+   * A single type (either built-in or complex)
+   */
+  visitAtom(type: CodeName): T;
+
+  /**
+   * A union of atomic types
+   */
+  visitAtomUnion(types: CodeName[]): T;
+
+  /**
+   * A list of atoms
+   */
   visitList(itemType: CodeName): T;
+
+  /**
+   * List of unions
+   */
   visitUnionList(itemTypes: CodeName[]): T;
+
+  /**
+   * Map of atoms
+   */
   visitMap(itemType: CodeName): T;
+
+  /**
+   * Map of unions
+   */
   visitUnionMap(itemTypes: CodeName[]): T;
-  visitListOrScalar(scalarTypes: CodeName[], itemTypes: CodeName[]): any;
+
+  /**
+   * Map of lists
+   */
+  visitMapOfLists(itemType: CodeName): T;
+
+  /**
+   * Union of list type and atom type
+   */
+  visitListOrAtom(scalarTypes: CodeName[], itemTypes: CodeName[]): any;
 }
 
+/**
+ * Invoke the right visitor method for the given property, depending on its type
+ *
+ * We use the term "atom" in this context to mean a type that can only accept a single
+ * value of a given type. This is to contrast it with collections and unions.
+ */
 export function typeDispatch<T>(resourceContext: CodeName, spec: schema.Property, visitor: PropertyVisitor<T>): T {
   const scalarTypes = specTypesToCodeTypes(resourceContext, scalarTypeNames(spec));
   const itemTypes = specTypesToCodeTypes(resourceContext, itemTypeNames(spec));
 
   if (scalarTypes.length && itemTypes.length) {
-    // Can accept both a list and a scalar
-    return visitor.visitListOrScalar(scalarTypes, itemTypes);
-  } else if (schema.isCollectionProperty(spec)) {
+    // Can accept both a collection a/nd a scalar
+    return visitor.visitListOrAtom(scalarTypes, itemTypes);
+  }
+
+  if (schema.isCollectionProperty(spec)) {
+    // List or map, of either atoms or unions
     if (schema.isMapProperty(spec)) {
+      if (schema.isMapOfListsOfPrimitivesProperty(spec)) {
+        // remove the '[]' from the type
+        const baseType = itemTypes[0].className;
+        const itemType = CodeName.forPrimitive(baseType.substr(0, baseType.length - 2));
+        return visitor.visitMapOfLists(itemType);
+      }
       if (itemTypes.length > 1) {
         return visitor.visitUnionMap(itemTypes);
       } else {
@@ -287,11 +364,13 @@ export function typeDispatch<T>(resourceContext: CodeName, spec: schema.Property
         return visitor.visitList(itemTypes[0]);
       }
     }
-  } else {
-    if (scalarTypes.length > 1) {
-      return visitor.visitUnionScalar(scalarTypes);
-    } else {
-      return visitor.visitScalar(scalarTypes[0]);
-    }
   }
+
+  // Atom or union of atoms
+  if (scalarTypes.length > 1) {
+    return visitor.visitAtomUnion(scalarTypes);
+  } else {
+    return visitor.visitAtom(scalarTypes[0]);
+  }
+
 }

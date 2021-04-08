@@ -1,6 +1,10 @@
-import dynamodb = require("@aws-cdk/aws-dynamodb");
-import cdk = require("@aws-cdk/core");
-import { GlobalTableCoordinator } from "./global-table-coordinator";
+import * as dynamodb from '@aws-cdk/aws-dynamodb';
+import * as cdk from '@aws-cdk/core';
+import { GlobalTableCoordinator } from './global-table-coordinator';
+
+// keep this import separate from other imports to reduce chance for merge conflicts with v2-main
+// eslint-disable-next-line no-duplicate-imports, import/order
+import { Construct } from '@aws-cdk/core';
 
 /**
  * Properties for the multiple DynamoDB tables to mash together into a
@@ -23,8 +27,10 @@ export interface GlobalTableProps extends cdk.StackProps, dynamodb.TableOptions 
 /**
  * This class works by deploying an AWS DynamoDB table into each region specified in  GlobalTableProps.regions[],
  * then triggering a CloudFormation Custom Resource Lambda to link them all together to create linked AWS Global DynamoDB tables.
+ *
+ * @deprecated use `@aws-cdk/aws-dynamodb.Table.replicationRegions` instead
  */
-export class GlobalTable extends cdk.Construct {
+export class GlobalTable extends Construct {
   /**
    * Creates the cloudformation custom resource that launches a lambda to tie it all together
    */
@@ -35,12 +41,15 @@ export class GlobalTable extends cdk.Construct {
    */
   private readonly _regionalTables = new Array<dynamodb.Table>();
 
-  constructor(scope: cdk.Construct, id: string, props: GlobalTableProps) {
+  constructor(scope: Construct, id: string, props: GlobalTableProps) {
     super(scope, id);
+
+    cdk.Annotations.of(this).addWarning('The @aws-cdk/aws-dynamodb-global module has been deprecated in favor of @aws-cdk/aws-dynamodb.Table.replicationRegions');
+
     this._regionalTables = [];
 
     if (props.stream != null && props.stream !== dynamodb.StreamViewType.NEW_AND_OLD_IMAGES) {
-      throw new Error("dynamoProps.stream MUST be set to dynamodb.StreamViewType.NEW_AND_OLD_IMAGES");
+      throw new Error('dynamoProps.stream MUST be set to dynamodb.StreamViewType.NEW_AND_OLD_IMAGES');
     }
 
     // need to set this stream specification, otherwise global tables don't work
@@ -51,17 +60,18 @@ export class GlobalTable extends cdk.Construct {
       stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
     };
 
+    this.lambdaGlobalTableCoordinator = new GlobalTableCoordinator(scope, id + '-CustomResource', props);
+
+    const scopeStack = cdk.Stack.of(scope);
     // here we loop through the configured regions.
     // in each region we'll deploy a separate stack with a DynamoDB Table with identical properties in the individual stacks
-    for (const reg of props.regions) {
-      const regionalStack = new cdk.Stack(this, id + "-" + reg, { env: { region: reg } });
-      const regionalTable = new dynamodb.Table(regionalStack, `${id}-GlobalTable-${reg}`, regionalTableProps);
+    for (const region of props.regions) {
+      const regionalStack = new cdk.Stack(this, id + '-' + region, { env: { region, account: scopeStack.account } });
+      const regionalTable = new dynamodb.Table(regionalStack, `${id}-GlobalTable-${region}`, regionalTableProps);
       this._regionalTables.push(regionalTable);
-    }
 
-    this.lambdaGlobalTableCoordinator = new GlobalTableCoordinator(scope, id + "-CustomResource", props);
-    for (const table of this._regionalTables) {
-      this.lambdaGlobalTableCoordinator.node.addDependency(table);
+      // deploy the regional stack before the Lambda coordinator stack
+      this.lambdaGlobalTableCoordinator.addDependency(regionalStack);
     }
   }
 

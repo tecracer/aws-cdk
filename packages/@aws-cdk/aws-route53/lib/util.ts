@@ -1,4 +1,9 @@
+import { Stack } from '@aws-cdk/core';
 import { IHostedZone } from './hosted-zone-ref';
+
+// keep this import separate from other imports to reduce chance for merge conflicts with v2-main
+// eslint-disable-next-line no-duplicate-imports, import/order
+import { Construct } from '@aws-cdk/core';
 
 /**
  * Validates a zone name is valid by Route53 specifc naming rules,
@@ -49,10 +54,24 @@ export function determineFullyQualifiedDomainName(providedName: string, hostedZo
     return providedName;
   }
 
-  const suffix = `.${hostedZone.zoneName}`;
-  if (providedName.endsWith(suffix) || providedName === hostedZone.zoneName) {
+  const hostedZoneName = hostedZone.zoneName.endsWith('.')
+    ? hostedZone.zoneName.substring(0, hostedZone.zoneName.length - 1)
+    : hostedZone.zoneName;
+
+  const suffix = `.${hostedZoneName}`;
+  if (providedName.endsWith(suffix) || providedName === hostedZoneName) {
     return `${providedName}.`;
   }
 
   return `${providedName}${suffix}.`;
+}
+
+export function makeHostedZoneArn(construct: Construct, hostedZoneId: string): string {
+  return Stack.of(construct).formatArn({
+    account: '',
+    region: '',
+    service: 'route53',
+    resource: 'hostedzone',
+    resourceName: hostedZoneId,
+  });
 }

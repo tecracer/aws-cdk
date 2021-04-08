@@ -1,13 +1,14 @@
-import cxapi = require('@aws-cdk/cx-api');
+import * as cxapi from '@aws-cdk/cx-api';
 import { CfnCondition } from './cfn-condition';
 // import required to be here, otherwise causes a cycle when running the generated JavaScript
-// tslint:disable-next-line:ordered-imports
+/* eslint-disable import/order */
 import { CfnRefElement } from './cfn-element';
 import { CfnCreationPolicy, CfnDeletionPolicy, CfnUpdatePolicy } from './cfn-resource-policy';
-import { Construct, IConstruct } from './construct';
+import { Construct, IConstruct, Node } from 'constructs';
+import { addDependency } from './deps';
 import { CfnReference } from './private/cfn-reference';
+import { Reference } from './reference';
 import { RemovalPolicy, RemovalPolicyOptions } from './removal-policy';
-import { IResolvable } from './resolvable';
 import { TagManager } from './tag-manager';
 import { capitalizePropertyNames, ignoreEmpty, PostResolveToken } from './util';
 
@@ -91,10 +92,8 @@ export class CfnResource extends CfnRefElement {
     // if aws:cdk:enable-path-metadata is set, embed the current construct's
     // path in the CloudFormation template, so it will be possible to trace
     // back to the actual construct path.
-    if (this.node.tryGetContext(cxapi.PATH_METADATA_ENABLE_CONTEXT)) {
-      this.cfnOptions.metadata = {
-        [cxapi.PATH_METADATA_KEY]: this.node.path
-      };
+    if (Node.of(this).tryGetContext(cxapi.PATH_METADATA_ENABLE_CONTEXT)) {
+      this.addMetadata(cxapi.PATH_METADATA_KEY, Node.of(this).path);
     }
   }
 
@@ -115,6 +114,10 @@ export class CfnResource extends CfnRefElement {
         deletionPolicy = CfnDeletionPolicy.RETAIN;
         break;
 
+      case RemovalPolicy.SNAPSHOT:
+        deletionPolicy = CfnDeletionPolicy.SNAPSHOT;
+        break;
+
       default:
         throw new Error(`Invalid removal policy: ${policy}`);
     }
@@ -131,7 +134,7 @@ export class CfnResource extends CfnRefElement {
    * in case there is no generated attribute.
    * @param attributeName The name of the attribute.
    */
-  public getAtt(attributeName: string): IResolvable {
+  public getAtt(attributeName: string): Reference {
     return CfnReference.for(this, attributeName);
   }
 
@@ -140,13 +143,45 @@ export class CfnResource extends CfnRefElement {
    * property override, either use `addPropertyOverride` or prefix `path` with
    * "Properties." (i.e. `Properties.TopicName`).
    *
-   * @param path  The path of the property, you can use dot notation to
+   * If the override is nested, separate each nested level using a dot (.) in the path parameter.
+   * If there is an array as part of the nesting, specify the index in the path.
+   *
+   * To include a literal `.` in the property name, prefix with a `\`. In most
+   * programming languages you will need to write this as `"\\."` because the
+   * `\` itself will need to be escaped.
+   *
+   * For example,
+   * ```typescript
+   * cfnResource.addOverride('Properties.GlobalSecondaryIndexes.0.Projection.NonKeyAttributes', ['myattribute']);
+   * cfnResource.addOverride('Properties.GlobalSecondaryIndexes.1.ProjectionType', 'INCLUDE');
+   * ```
+   * would add the overrides
+   * ```json
+   * "Properties": {
+   *   "GlobalSecondaryIndexes": [
+   *     {
+   *       "Projection": {
+   *         "NonKeyAttributes": [ "myattribute" ]
+   *         ...
+   *       }
+   *       ...
+   *     },
+   *     {
+   *       "ProjectionType": "INCLUDE"
+   *       ...
+   *     },
+   *   ]
+   *   ...
+   * }
+   * ```
+   *
+   * @param path - The path of the property, you can use dot notation to
    *        override values in complex types. Any intermdediate keys
    *        will be created as needed.
-   * @param value The value. Could be primitive or complex.
+   * @param value - The value. Could be primitive or complex.
    */
   public addOverride(path: string, value: any) {
-    const parts = path.split('.');
+    const parts = splitOnPeriods(path);
     let curr: any = this.rawOverrides;
 
     while (parts.length > 1) {
@@ -195,11 +230,47 @@ export class CfnResource extends CfnRefElement {
   }
 
   /**
-   * Indicates that this resource depends on another resource and cannot be provisioned
-   * unless the other resource has been successfully provisioned.
+   * Indicates that this resource depends on another resource and cannot be
+   * provisioned unless the other resource has been successfully provisioned.
+   *
+   * This can be used for resources across stacks (or nested stack) boundaries
+   * and the dependency will automatically be transferred to the relevant scope.
    */
-  public addDependsOn(resource: CfnResource) {
-    this.dependsOn.add(resource);
+  public addDependsOn(target: CfnResource) {
+    // skip this dependency if the target is not part of the output
+    if (!target.shouldSynthesize()) {
+      return;
+    }
+
+    addDependency(this, target, `"${Node.of(this).path}" depends on "${Node.of(target).path}"`);
+  }
+
+  /**
+   * Add a value to the CloudFormation Resource Metadata
+   * @see https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/metadata-section-structure.html
+   *
+   * Note that this is a different set of metadata from CDK node metadata; this
+   * metadata ends up in the stack template under the resource, whereas CDK
+   * node metadata ends up in the Cloud Assembly.
+   */
+  public addMetadata(key: string, value: any) {
+    if (!this.cfnOptions.metadata) {
+      this.cfnOptions.metadata = {};
+    }
+
+    this.cfnOptions.metadata[key] = value;
+  }
+
+  /**
+   * Retrieve a value value from the CloudFormation Resource Metadata
+   * @see https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/metadata-section-structure.html
+   *
+   * Note that this is a different set of metadata from CDK node metadata; this
+   * metadata ends up in the stack template under the resource, whereas CDK
+   * node metadata ends up in the Cloud Assembly.
+   */
+  public getMetadata(key: string): any {
+    return this.cfnOptions.metadata?.[key];
   }
 
   /**
@@ -210,10 +281,28 @@ export class CfnResource extends CfnRefElement {
   }
 
   /**
+   * Called by the `addDependency` helper function in order to realize a direct
+   * dependency between two resources that are directly defined in the same
+   * stacks.
+   *
+   * Use `resource.addDependsOn` to define the dependency between two resources,
+   * which also takes stack boundaries into account.
+   *
+   * @internal
+   */
+  public _addResourceDependency(target: CfnResource) {
+    this.dependsOn.add(target);
+  }
+
+  /**
    * Emits CloudFormation for this resource.
    * @internal
    */
   public _toCloudFormation(): object {
+    if (!this.shouldSynthesize()) {
+      return { };
+    }
+
     try {
       const ret = {
         Resources: {
@@ -223,18 +312,23 @@ export class CfnResource extends CfnRefElement {
             Type: this.cfnResourceType,
             Properties: ignoreEmpty(this.cfnProperties),
             DependsOn: ignoreEmpty(renderDependsOn(this.dependsOn)),
-            CreationPolicy:  capitalizePropertyNames(this, renderCreationPolicy(this.cfnOptions.creationPolicy)),
+            CreationPolicy: capitalizePropertyNames(this, renderCreationPolicy(this.cfnOptions.creationPolicy)),
             UpdatePolicy: capitalizePropertyNames(this, this.cfnOptions.updatePolicy),
             UpdateReplacePolicy: capitalizePropertyNames(this, this.cfnOptions.updateReplacePolicy),
             DeletionPolicy: capitalizePropertyNames(this, this.cfnOptions.deletionPolicy),
+            Version: this.cfnOptions.version,
+            Description: this.cfnOptions.description,
             Metadata: ignoreEmpty(this.cfnOptions.metadata),
-            Condition: this.cfnOptions.condition && this.cfnOptions.condition.logicalId
-          }, props => {
-            const renderedProps = this.renderProperties(props.Properties || {});
-            props.Properties = renderedProps && (Object.values(renderedProps).find(v => !!v) ? renderedProps : undefined);
-            return deepMerge(props, this.rawOverrides);
-          })
-        }
+            Condition: this.cfnOptions.condition && this.cfnOptions.condition.logicalId,
+          }, resourceDef => {
+            const renderedProps = this.renderProperties(resourceDef.Properties || {});
+            if (renderedProps) {
+              const hasDefined = Object.values(renderedProps).find(v => v !== undefined);
+              resourceDef.Properties = hasDefined !== undefined ? renderedProps : undefined;
+            }
+            return deepMerge(resourceDef, this.rawOverrides);
+          }),
+        },
       };
       return ret;
     } catch (e) {
@@ -272,8 +366,13 @@ export class CfnResource extends CfnRefElement {
   }
 
   protected get cfnProperties(): { [key: string]: any } {
-    const tags = TagManager.isTaggable(this) ? this.tags.renderTags() : {};
-    return deepMerge(this._cfnProperties || {}, {tags});
+    const props = this._cfnProperties || {};
+    if (TagManager.isTaggable(this)) {
+      const tagsProp: { [key: string]: any } = {};
+      tagsProp[this.tags.tagPropertyName] = this.tags.renderTags();
+      return deepMerge(props, tagsProp);
+    }
+    return props;
   }
 
   protected renderProperties(props: {[key: string]: any}): { [key: string]: any } {
@@ -292,6 +391,17 @@ export class CfnResource extends CfnRefElement {
 
   protected validateProperties(_properties: any) {
     // Nothing
+  }
+
+  /**
+   * Can be overridden by subclasses to determine if this resource will be rendered
+   * into the cloudformation template.
+   *
+   * @returns `true` if the resource should be included or `false` is the resource
+   * should be omitted.
+   */
+  protected shouldSynthesize() {
+    return true;
   }
 }
 
@@ -341,6 +451,22 @@ export interface ICfnResourceOptions {
   updateReplacePolicy?: CfnDeletionPolicy;
 
   /**
+   * The version of this resource.
+   * Used only for custom CloudFormation resources.
+   *
+   * @see https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-cfn-customresource.html
+   */
+  version?: string;
+
+  /**
+   * The description of this resource.
+   * Used for informational purposes only, is not processed in any way
+   * (and stays with the CloudFormation template, is not passed to the underlying resource,
+   * even if it does have a 'description' property).
+   */
+  description?: string;
+
+  /**
    * Metadata associated with the CloudFormation resource. This is not the same as the construct metadata which can be added
    * using construct.addMetadata(), but would not appear in the CloudFormation template automatically.
    */
@@ -384,4 +510,26 @@ function deepMerge(target: any, ...sources: any[]) {
   }
 
   return target;
+}
+
+/**
+ * Split on periods while processing escape characters \
+ */
+function splitOnPeriods(x: string): string[] {
+  // Build this list in reverse because it's more convenient to get the "current"
+  // item by doing ret[0] than by ret[ret.length - 1].
+  const ret = [''];
+  for (let i = 0; i < x.length; i++) {
+    if (x[i] === '\\' && i + 1 < x.length) {
+      ret[0] += x[i + 1];
+      i++;
+    } else if (x[i] === '.') {
+      ret.unshift('');
+    } else {
+      ret[0] += x[i];
+    }
+  }
+
+  ret.reverse();
+  return ret;
 }

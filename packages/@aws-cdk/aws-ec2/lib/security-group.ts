@@ -1,18 +1,31 @@
-import { Construct, IResource, Lazy, Resource, ResourceProps, Stack } from '@aws-cdk/core';
+import * as cxschema from '@aws-cdk/cloud-assembly-schema';
+import { Annotations, ContextProvider, IResource, Lazy, Names, Resource, ResourceProps, Stack, Token } from '@aws-cdk/core';
+import * as cxapi from '@aws-cdk/cx-api';
+import { Construct } from 'constructs';
 import { Connections } from './connections';
 import { CfnSecurityGroup, CfnSecurityGroupEgress, CfnSecurityGroupIngress } from './ec2.generated';
-import { IPeer } from './peer';
+import { IPeer, Peer } from './peer';
 import { Port } from './port';
 import { IVpc } from './vpc';
 
 const SECURITY_GROUP_SYMBOL = Symbol.for('@aws-cdk/iam.SecurityGroup');
 
+const SECURITY_GROUP_DISABLE_INLINE_RULES_CONTEXT_KEY = '@aws-cdk/aws-ec2.securityGroupDisableInlineRules';
+
+/**
+ * Interface for security group-like objects
+ */
 export interface ISecurityGroup extends IResource, IPeer {
   /**
    * ID for the current security group
    * @attribute
    */
   readonly securityGroupId: string;
+
+  /**
+   * Whether the SecurityGroup has been configured to allow all outbound traffic
+   */
+  readonly allowAllOutbound: boolean;
 
   /**
    * Add an ingress rule for the current security group
@@ -49,6 +62,7 @@ abstract class SecurityGroupBase extends Resource implements ISecurityGroup {
   }
 
   public abstract readonly securityGroupId: string;
+  public abstract readonly allowAllOutbound: boolean;
 
   public readonly canInlineRule = false;
   public readonly connections: Connections = new Connections({ securityGroups: [this] });
@@ -61,7 +75,7 @@ abstract class SecurityGroupBase extends Resource implements ISecurityGroup {
   }
 
   public get uniqueId() {
-    return this.node.uniqueId;
+    return Names.nodeUniqueId(this.node);
   }
 
   public addIngressRule(peer: IPeer, connection: Port, description?: string, remoteRule?: boolean) {
@@ -77,7 +91,7 @@ abstract class SecurityGroupBase extends Resource implements ISecurityGroup {
         groupId: this.securityGroupId,
         ...peer.toIngressRuleConfig(),
         ...connection.toRuleJson(),
-        description
+        description,
       });
     }
   }
@@ -95,7 +109,7 @@ abstract class SecurityGroupBase extends Resource implements ISecurityGroup {
         groupId: this.securityGroupId,
         ...peer.toEgressRuleConfig(),
         ...connection.toRuleJson(),
-        description
+        description,
       });
     }
   }
@@ -158,11 +172,11 @@ abstract class SecurityGroupBase extends Resource implements ISecurityGroup {
  *   ╚═══════════════════════════════════╝
  */
 function determineRuleScope(
-      group: SecurityGroupBase,
-      peer: IPeer,
-      connection: Port,
-      fromTo: 'from' | 'to',
-      remoteRule?: boolean): [SecurityGroupBase, string] {
+  group: SecurityGroupBase,
+  peer: IPeer,
+  connection: Port,
+  fromTo: 'from' | 'to',
+  remoteRule?: boolean): [SecurityGroupBase, string] {
 
   if (remoteRule && SecurityGroupBase.isSecurityGroup(peer) && differentStacks(group, peer)) {
     // Reversed
@@ -170,8 +184,12 @@ function determineRuleScope(
     return [peer, `${group.uniqueId}:${connection} ${reversedFromTo}`];
   } else {
     // Regular (do old ID escaping to in order to not disturb existing deployments)
-    return [group, `${fromTo} ${peer.uniqueId}:${connection}`.replace('/', '_')];
+    return [group, `${fromTo} ${renderPeer(peer)}:${connection}`.replace('/', '_')];
   }
+}
+
+function renderPeer(peer: IPeer) {
+  return Token.isUnresolved(peer.uniqueId) ? '{IndirectPeer}' : peer.uniqueId;
 }
 
 function differentStacks(group1: SecurityGroupBase, group2: SecurityGroupBase) {
@@ -213,26 +231,151 @@ export interface SecurityGroupProps {
    * @default true
    */
   readonly allowAllOutbound?: boolean;
+
+  /**
+   * Whether to disable inline ingress and egress rule optimization.
+   *
+   * If this is set to true, ingress and egress rules will not be declared under the
+   * SecurityGroup in cloudformation, but will be separate elements.
+   *
+   * Inlining rules is an optimization for producing smaller stack templates. Sometimes
+   * this is not desirable, for example when security group access is managed via tags.
+   *
+   * The default value can be overriden globally by setting the context variable
+   * '@aws-cdk/aws-ec2.securityGroupDisableInlineRules'.
+   *
+   * @default false
+   */
+  readonly disableInlineRules?: boolean;
+}
+
+/**
+ * Additional options for imported security groups
+ */
+export interface SecurityGroupImportOptions {
+  /**
+   * Mark the SecurityGroup as having been created allowing all outbound traffic
+   *
+   * Only if this is set to false will egress rules be added to this security
+   * group. Be aware, this would undo any potential "all outbound traffic"
+   * default.
+   *
+   * @experimental
+   * @default true
+   */
+  readonly allowAllOutbound?: boolean;
+
+  /**
+   * If a SecurityGroup is mutable CDK can add rules to existing groups
+   *
+   * Beware that making a SecurityGroup immutable might lead to issue
+   * due to missing ingress/egress rules for new resources.
+   *
+   * @experimental
+   * @default true
+   */
+  readonly mutable?: boolean;
 }
 
 /**
  * Creates an Amazon EC2 security group within a VPC.
  *
- * This class has an additional optimization over imported security groups that it can also create
- * inline ingress and egress rule (which saves on the total number of resources inside
- * the template).
+ * Security Groups act like a firewall with a set of rules, and are associated
+ * with any AWS resource that has or creates Elastic Network Interfaces (ENIs).
+ * A typical example of a resource that has a security group is an Instance (or
+ * Auto Scaling Group of instances)
+ *
+ * If you are defining new infrastructure in CDK, there is a good chance you
+ * won't have to interact with this class at all. Like IAM Roles, Security
+ * Groups need to exist to control access between AWS resources, but CDK will
+ * automatically generate and populate them with least-privilege permissions
+ * for you so you can concentrate on your business logic.
+ *
+ * All Constructs that require Security Groups will create one for you if you
+ * don't specify one at construction. After construction, you can selectively
+ * allow connections to and between constructs via--for example-- the `instance.connections`
+ * object. Think of it as "allowing connections to your instance", rather than
+ * "adding ingress rules a security group". See the [Allowing
+ * Connections](https://docs.aws.amazon.com/cdk/api/latest/docs/aws-ec2-readme.html#allowing-connections)
+ * section in the library documentation for examples.
+ *
+ * Direct manipulation of the Security Group through `addIngressRule` and
+ * `addEgressRule` is possible, but mutation through the `.connections` object
+ * is recommended. If you peer two constructs with security groups this way,
+ * appropriate rules will be created in both.
+ *
+ * If you have an existing security group you want to use in your CDK application,
+ * you would import it like this:
+ *
+ * ```ts
+ * const securityGroup = SecurityGroup.fromSecurityGroupId(this, 'SG', 'sg-12345', {
+ *   mutable: false
+ * });
+ * ```
  */
 export class SecurityGroup extends SecurityGroupBase {
+  /**
+   * Look up a security group by id.
+   */
+  public static fromLookup(scope: Construct, id: string, securityGroupId: string) {
+    if (Token.isUnresolved(securityGroupId)) {
+      throw new Error('All arguments to look up a security group must be concrete (no Tokens)');
+    }
+
+    const attributes: cxapi.SecurityGroupContextResponse = ContextProvider.getValue(scope, {
+      provider: cxschema.ContextProvider.SECURITY_GROUP_PROVIDER,
+      props: { securityGroupId },
+      dummyValue: {
+        securityGroupId: 'sg-12345',
+        allowAllOutbound: true,
+      } as cxapi.SecurityGroupContextResponse,
+    }).value;
+
+    return SecurityGroup.fromSecurityGroupId(scope, id, attributes.securityGroupId, {
+      allowAllOutbound: attributes.allowAllOutbound,
+      mutable: true,
+    });
+  }
 
   /**
    * Import an existing security group into this app.
+   *
+   * This method will assume that the Security Group has a rule in it which allows
+   * all outbound traffic, and so will not add egress rules to the imported Security
+   * Group (only ingress rules).
+   *
+   * If your existing Security Group needs to have egress rules added, pass the
+   * `allowAllOutbound: false` option on import.
    */
-  public static fromSecurityGroupId(scope: Construct, id: string, securityGroupId: string): ISecurityGroup {
-    class Import extends SecurityGroupBase {
+  public static fromSecurityGroupId(scope: Construct, id: string, securityGroupId: string, options: SecurityGroupImportOptions = {}): ISecurityGroup {
+    class MutableImport extends SecurityGroupBase {
       public securityGroupId = securityGroupId;
+      public allowAllOutbound = options.allowAllOutbound ?? true;
+
+      public addEgressRule(peer: IPeer, connection: Port, description?: string, remoteRule?: boolean) {
+        // Only if allowAllOutbound has been disabled
+        if (options.allowAllOutbound === false) {
+          super.addEgressRule(peer, connection, description, remoteRule);
+        }
+      }
     }
 
-    return new Import(scope, id);
+    class ImmutableImport extends SecurityGroupBase {
+      public securityGroupId = securityGroupId;
+      public allowAllOutbound = options.allowAllOutbound ?? true;
+
+      public addEgressRule(_peer: IPeer, _connection: Port, _description?: string, _remoteRule?: boolean) {
+        // do nothing
+      }
+
+      public addIngressRule(_peer: IPeer, _connection: Port, _description?: string, _remoteRule?: boolean) {
+        // do nothing
+      }
+    }
+
+    return options.mutable !== false
+      ? new MutableImport(scope, id)
+      : new ImmutableImport(scope, id);
   }
 
   /**
@@ -256,26 +399,38 @@ export class SecurityGroup extends SecurityGroupBase {
    */
   public readonly securityGroupVpcId: string;
 
+  /**
+   * Whether the SecurityGroup has been configured to allow all outbound traffic
+   */
+  public readonly allowAllOutbound: boolean;
+
   private readonly securityGroup: CfnSecurityGroup;
   private readonly directIngressRules: CfnSecurityGroup.IngressProperty[] = [];
   private readonly directEgressRules: CfnSecurityGroup.EgressProperty[] = [];
 
-  private readonly allowAllOutbound: boolean;
+  /**
+   * Whether to disable optimization for inline security group rules.
+   */
+  private readonly disableInlineRules: boolean;
 
   constructor(scope: Construct, id: string, props: SecurityGroupProps) {
     super(scope, id, {
-      physicalName: props.securityGroupName
+      physicalName: props.securityGroupName,
     });
 
     const groupDescription = props.description || this.node.path;
 
     this.allowAllOutbound = props.allowAllOutbound !== false;
 
+    this.disableInlineRules = props.disableInlineRules !== undefined ?
+      !!props.disableInlineRules :
+      !!this.node.tryGetContext(SECURITY_GROUP_DISABLE_INLINE_RULES_CONTEXT_KEY);
+
     this.securityGroup = new CfnSecurityGroup(this, 'Resource', {
       groupName: this.physicalName,
       groupDescription,
-      securityGroupIngress: Lazy.anyValue({ produce: () => this.directIngressRules }),
-      securityGroupEgress: Lazy.anyValue({ produce: () => this.directEgressRules }),
+      securityGroupIngress: Lazy.any({ produce: () => this.directIngressRules }, { omitEmptyArray: true } ),
+      securityGroupEgress: Lazy.any({ produce: () => this.directEgressRules }, { omitEmptyArray: true } ),
       vpcId: props.vpc.vpcId,
     });
 
@@ -287,7 +442,7 @@ export class SecurityGroup extends SecurityGroupBase {
   }
 
   public addIngressRule(peer: IPeer, connection: Port, description?: string, remoteRule?: boolean) {
-    if (!peer.canInlineRule || !connection.canInlineRule) {
+    if (!peer.canInlineRule || !connection.canInlineRule || this.disableInlineRules) {
       super.addIngressRule(peer, connection, description, remoteRule);
       return;
     }
@@ -299,7 +454,7 @@ export class SecurityGroup extends SecurityGroupBase {
     this.addDirectIngressRule({
       ...peer.toIngressRuleConfig(),
       ...connection.toRuleJson(),
-      description
+      description,
     });
   }
 
@@ -308,6 +463,7 @@ export class SecurityGroup extends SecurityGroupBase {
       // In the case of "allowAllOutbound", we don't add any more rules. There
       // is only one rule which allows all traffic and that subsumes any other
       // rule.
+      Annotations.of(this).addWarning('Ignoring Egress rule since \'allowAllOutbound\' is set to true; To add customize rules, set allowAllOutbound=false on the SecurityGroup');
       return;
     } else {
       // Otherwise, if the bogus rule exists we can now remove it because the
@@ -316,7 +472,7 @@ export class SecurityGroup extends SecurityGroupBase {
       this.removeNoTrafficRule();
     }
 
-    if (!peer.canInlineRule || !connection.canInlineRule) {
+    if (!peer.canInlineRule || !connection.canInlineRule || this.disableInlineRules) {
       super.addEgressRule(peer, connection, description, remoteRule);
       return;
     }
@@ -328,7 +484,7 @@ export class SecurityGroup extends SecurityGroupBase {
     const rule = {
       ...peer.toEgressRuleConfig(),
       ...connection.toRuleJson(),
-      description
+      description,
     };
 
     if (isAllTrafficRule(rule)) {
@@ -390,10 +546,14 @@ export class SecurityGroup extends SecurityGroupBase {
    *   strictly necessary).
    */
   private addDefaultEgressRule() {
-    if (this.allowAllOutbound) {
-      this.directEgressRules.push(ALLOW_ALL_RULE);
+    if (this.disableInlineRules) {
+      const peer = this.allowAllOutbound ? ALL_TRAFFIC_PEER : NO_TRAFFIC_PEER;
+      const port = this.allowAllOutbound ? ALL_TRAFFIC_PORT : NO_TRAFFIC_PORT;
+      const description = this.allowAllOutbound ? ALLOW_ALL_RULE.description : MATCH_NO_TRAFFIC.description;
+      super.addEgressRule(peer, port, description, false);
     } else {
-      this.directEgressRules.push(MATCH_NO_TRAFFIC);
+      const rule = this.allowAllOutbound? ALLOW_ALL_RULE : MATCH_NO_TRAFFIC;
+      this.directEgressRules.push(rule);
     }
   }
 
@@ -401,9 +561,20 @@ export class SecurityGroup extends SecurityGroupBase {
    * Remove the bogus rule if it exists
    */
   private removeNoTrafficRule() {
-    const i = this.directEgressRules.findIndex(r => egressRulesEqual(r, MATCH_NO_TRAFFIC));
-    if (i > -1) {
-      this.directEgressRules.splice(i, 1);
+    if (this.disableInlineRules) {
+      const [scope, id] = determineRuleScope(
+        this,
+        NO_TRAFFIC_PEER,
+        NO_TRAFFIC_PORT,
+        'to',
+        false);
+
+      scope.node.tryRemoveChild(id);
+    } else {
+      const i = this.directEgressRules.findIndex(r => egressRulesEqual(r, MATCH_NO_TRAFFIC));
+      if (i > -1) {
+        this.directEgressRules.splice(i, 1);
+      }
     }
   }
 }
@@ -422,8 +593,11 @@ const MATCH_NO_TRAFFIC = {
   description: 'Disallow all traffic',
   ipProtocol: 'icmp',
   fromPort: 252,
-  toPort: 86
+  toPort: 86,
 };
+
+const NO_TRAFFIC_PEER = Peer.ipv4(MATCH_NO_TRAFFIC.cidrIp);
+const NO_TRAFFIC_PORT = Port.icmpTypeAndCode(MATCH_NO_TRAFFIC.fromPort, MATCH_NO_TRAFFIC.toPort);
 
 /**
  * Egress rule that matches all traffic
@@ -433,6 +607,9 @@ const ALLOW_ALL_RULE = {
   description: 'Allow all outbound traffic by default',
   ipProtocol: '-1',
 };
+
+const ALL_TRAFFIC_PEER = Peer.anyIpv4();
+const ALL_TRAFFIC_PORT = Port.allTraffic();
 
 export interface ConnectionRule {
   /**

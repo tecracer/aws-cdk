@@ -1,40 +1,122 @@
-import lambda = require('@aws-cdk/aws-lambda');
-import sns = require('@aws-cdk/aws-sns');
-import { CfnResource, Construct, RemovalPolicy, Resource } from '@aws-cdk/core';
-import { CfnCustomResource } from './cloudformation.generated';
+import * as lambda from '@aws-cdk/aws-lambda';
+import * as sns from '@aws-cdk/aws-sns';
+import * as core from '@aws-cdk/core';
+
+// keep this import separate from other imports to reduce chance for merge conflicts with v2-main
+// eslint-disable-next-line no-duplicate-imports, import/order
+import { Construct } from '@aws-cdk/core';
 
 /**
  * Collection of arbitrary properties
+ *
+ * @deprecated this type has been deprecated in favor of using a key-value type directly
  */
 export type Properties = {[key: string]: any};
 
-export class CustomResourceProvider {
+/**
+ * Configuration options for custom resource providers.
+ *
+ * @deprecated used in {@link ICustomResourceProvider} which is now deprecated
+ */
+export interface CustomResourceProviderConfig {
+  /**
+   * The ARN of the SNS topic or the AWS Lambda function which implements this
+   * provider.
+   */
+  readonly serviceToken: string;
+}
+
+/**
+ * Represents a provider for an AWS CloudFormation custom resources.
+ * @deprecated use `core.ICustomResourceProvider`
+ */
+export interface ICustomResourceProvider {
+  /**
+   * Called when this provider is used by a `CustomResource`.
+   * @param scope The resource that uses this provider.
+   * @returns provider configuration
+   */
+  bind(scope: Construct): CustomResourceProviderConfig;
+}
+
+/**
+ * Represents a provider for an AWS CloudFormation custom resources.
+ *
+ * @deprecated use core.CustomResource instead
+ */
+export class CustomResourceProvider implements ICustomResourceProvider {
   /**
    * The Lambda provider that implements this custom resource.
    *
    * We recommend using a lambda.SingletonFunction for this.
    */
-  public static lambda(handler: lambda.IFunction) { return new CustomResourceProvider(handler.functionArn); }
+  public static fromLambda(handler: lambda.IFunction): CustomResourceProvider {
+    return new CustomResourceProvider(handler.functionArn);
+  }
 
   /**
    * The SNS Topic for the provider that implements this custom resource.
    */
-  public static topic(topic: sns.ITopic) { return new CustomResourceProvider(topic.topicArn); }
+  public static fromTopic(topic: sns.ITopic): CustomResourceProvider {
+    return new CustomResourceProvider(topic.topicArn);
+  }
 
-  private constructor(public readonly serviceToken: string) {}
+  /**
+   * Use AWS Lambda as a provider.
+   * @deprecated use `fromLambda`
+   */
+  public static lambda(handler: lambda.IFunction) { return this.fromLambda(handler); }
+
+  /**
+   * Use an SNS topic as the provider.
+   * @deprecated use `fromTopic`
+   */
+  public static topic(topic: sns.ITopic) { return this.fromTopic(topic); }
+
+  /**
+   * @param serviceToken the ServiceToken which contains the ARN for this provider.
+   */
+  private constructor(public readonly serviceToken: string) { }
+
+  public bind(_: Construct): CustomResourceProviderConfig {
+    return { serviceToken: this.serviceToken };
+  }
 }
 
 /**
  * Properties to provide a Lambda-backed custom resource
+ * @deprecated use `core.CustomResourceProps`
  */
 export interface CustomResourceProps {
   /**
-   * The provider which implements the custom resource
+   * The provider which implements the custom resource.
    *
-   * @example CustomResourceProvider.lambda(myFunction)
-   * @example CustomResourceProvider.topic(myTopic)
+   * You can implement a provider by listening to raw AWS CloudFormation events
+   * through an SNS topic or an AWS Lambda function or use the CDK's custom
+   * [resource provider framework] which makes it easier to implement robust
+   * providers.
+   *
+   * [resource provider framework]: https://docs.aws.amazon.com/cdk/api/latest/docs/custom-resources-readme.html
+   *
+   * ```ts
+   * // use the provider framework from aws-cdk/custom-resources:
+   * provider: new custom_resources.Provider({
+   *   onEventHandler: myOnEventLambda,
+   *   isCompleteHandler: myIsCompleteLambda, // optional
+   * });
+   * ```
+   *
+   * ```ts
+   * // invoke an AWS Lambda function when a lifecycle event occurs:
+   * provider: CustomResourceProvider.fromLambda(myFunction)
+   * ```
+   *
+   * ```ts
+   * // publish lifecycle events to an SNS topic:
+   * provider: CustomResourceProvider.fromTopic(myTopic)
+   * ```
    */
-  readonly provider: CustomResourceProvider;
+  readonly provider: ICustomResourceProvider;
 
   /**
    * Properties to pass to the Lambda
@@ -71,73 +153,21 @@ export interface CustomResourceProps {
    *
    * @default cdk.RemovalPolicy.Destroy
    */
-  readonly removalPolicy?: RemovalPolicy;
+  readonly removalPolicy?: core.RemovalPolicy;
 }
 
 /**
- * Custom resource that is implemented using a Lambda
- *
- * As a custom resource author, you should be publishing a subclass of this class
- * that hides the choice of provider, and accepts a strongly-typed properties
- * object with the properties your provider accepts.
+ * Deprecated.
+ * @deprecated use `core.CustomResource`
  */
-export class CustomResource extends Resource {
-  private readonly resource: CfnResource;
-
+export class CustomResource extends core.CustomResource {
   constructor(scope: Construct, id: string, props: CustomResourceProps) {
-    super(scope, id);
-
-    const type = renderResourceType(props.resourceType);
-
-    this.resource = new CfnResource(this, 'Default', {
-      type,
-      properties: {
-        ServiceToken: props.provider.serviceToken,
-        ...uppercaseProperties(props.properties || {})
-      }
+    super(scope, id, {
+      pascalCaseProperties: true,
+      properties: props.properties,
+      removalPolicy: props.removalPolicy,
+      resourceType: props.resourceType,
+      serviceToken: core.Lazy.string({ produce: () => props.provider.bind(this).serviceToken }),
     });
-
-    this.resource.applyRemovalPolicy(props.removalPolicy, { default: RemovalPolicy.DESTROY });
   }
-
-  public getAtt(attributeName: string) {
-    return this.resource.getAtt(attributeName);
-  }
-}
-
-/**
- * Uppercase the first letter of every property name
- *
- * It's customary for CloudFormation properties to start with capitals, and our
- * properties to start with lowercase, so this function translates from one
- * to the other
- */
-function uppercaseProperties(props: Properties): Properties {
-  const ret: Properties = {};
-  Object.keys(props).forEach(key => {
-    const upper = key.substr(0, 1).toUpperCase() + key.substr(1);
-    ret[upper] = props[key];
-  });
-  return ret;
-}
-
-function renderResourceType(resourceType?: string) {
-  if (!resourceType) {
-    return CfnCustomResource.CFN_RESOURCE_TYPE_NAME;
-  }
-
-  if (!resourceType.startsWith('Custom::')) {
-    throw new Error(`Custom resource type must begin with "Custom::" (${resourceType})`);
-  }
-
-  const typeName = resourceType.substr(resourceType.indexOf('::') + 2);
-  if (typeName.length > 60) {
-    throw new Error(`Custom resource type length > 60 (${resourceType})`);
-  }
-
-  if (!/^[a-z0-9_@-]+$/i.test(typeName)) {
-    throw new Error(`Custom resource type name can only include alphanumeric characters and _@- (${typeName})`);
-  }
-
-  return resourceType;
 }

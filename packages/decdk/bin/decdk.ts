@@ -1,5 +1,5 @@
-import cdk = require('@aws-cdk/core');
-import colors = require('colors/safe');
+import * as cdk from '@aws-cdk/core';
+import * as colors from 'colors/safe';
 import { DeclarativeStack, loadTypeSystem, readTemplate, stackNameFromFileName } from '../lib';
 
 async function main() {
@@ -20,7 +20,7 @@ async function main() {
 }
 
 main().catch(e => {
-  // tslint:disable-next-line:no-console
+  // eslint-disable-next-line no-console
   console.error(colors.red(e));
   process.exit(1);
 });

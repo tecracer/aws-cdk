@@ -1,5 +1,7 @@
 # VSCode extension
-.vscode/
+
+# Store launch config in repo but not settings
+.vscode/settings.json
 /.favorites.json
 
 # TypeScript incremental build states
@@ -16,9 +18,12 @@ pack/
 .tools/
 coverage/
 .nyc_output
+.nycrc
 .LAST_BUILD
 *.sw[a-z]
 *~
+.idea
+junit.xml
 
 # We don't want tsconfig at the root
 /tsconfig.json
@@ -27,4 +32,15 @@ coverage/
 cdk.context.json
 .cdk.staging/
 cdk.out/
+*.tabl.json
 
+# Yarn error log
+yarn-error.log
+
+# VSCode history plugin
+.vscode/.history/
+
+# Cloud9
+.c9
+
+/.versionrc.json

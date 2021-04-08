@@ -1,12 +1,69 @@
-import iam = require('@aws-cdk/aws-iam');
-import cdk = require('@aws-cdk/core');
+import * as iam from '@aws-cdk/aws-iam';
+import * as secretsmanager from '@aws-cdk/aws-secretsmanager';
+import * as ssm from '@aws-cdk/aws-ssm';
+import * as cdk from '@aws-cdk/core';
+import { Construct } from 'constructs';
 import { NetworkMode, TaskDefinition } from './base/task-definition';
 import { ContainerImage, ContainerImageConfig } from './container-image';
 import { CfnTaskDefinition } from './ecs.generated';
+import { EnvironmentFile, EnvironmentFileConfig } from './environment-file';
 import { LinuxParameters } from './linux-parameters';
 import { LogDriver, LogDriverConfig } from './log-drivers/log-driver';
 
+// keep this import separate from other imports to reduce chance for merge conflicts with v2-main
+// eslint-disable-next-line no-duplicate-imports, import/order
+import { Construct as CoreConstruct } from '@aws-cdk/core';
+
 /**
+ * A secret environment variable.
+ */
+export abstract class Secret {
+  /**
+   * Creates an environment variable value from a parameter stored in AWS
+   * Systems Manager Parameter Store.
+   */
+  public static fromSsmParameter(parameter: ssm.IParameter): Secret {
+    return {
+      arn: parameter.parameterArn,
+      grantRead: grantee => parameter.grantRead(grantee),
+    };
+  }
+
+  /**
+   * Creates a environment variable value from a secret stored in AWS Secrets
+   * Manager.
+   *
+   * @param secret the secret stored in AWS Secrets Manager
+   * @param field the name of the field with the value that you want to set as
+   * the environment variable value. Only values in JSON format are supported.
+   * If you do not specify a JSON field, then the full content of the secret is
+   * used.
+   */
+  public static fromSecretsManager(secret: secretsmanager.ISecret, field?: string): Secret {
+    return {
+      arn: field ? `${secret.secretArn}:${field}::` : secret.secretArn,
+      hasField: !!field,
+      grantRead: grantee => secret.grantRead(grantee),
+    };
+  }
+
+  /**
+   * The ARN of the secret
+   */
+  public abstract readonly arn: string;
+
+  /**
+   * Whether this secret uses a specific JSON field
+   */
+  public abstract readonly hasField?: boolean;
+
+  /**
+   * Grants reading the secret to a principal
+   */
+  public abstract grantRead(grantee: iam.IGrantable): iam.Grant;
+}
+
+/*
  * The options for creating a container definition.
  */
 export interface ContainerDefinitionOptions {
@@ -88,6 +145,36 @@ export interface ContainerDefinitionOptions {
    * @default - No environment variables.
    */
   readonly environment?: { [key: string]: string };
+
+  /**
+   * The environment files to pass to the container.
+   *
+   * @see https://docs.aws.amazon.com/AmazonECS/latest/developerguide/taskdef-envfiles.html
+   *
+   * @default - No environment files.
+   */
+  readonly environmentFiles?: EnvironmentFile[];
+
+  /**
+   * The secret environment variables to pass to the container.
+   *
+   * @default - No secret environment variables.
+   */
+  readonly secrets?: { [key: string]: Secret };
+
+  /**
+   * Time duration (in seconds) to wait before giving up on resolving dependencies for a container.
+   *
+   * @default - none
+   */
+  readonly startTimeout?: cdk.Duration;
+
+  /**
+   * Time duration (in seconds) to wait before the container is forcefully killed if it doesn't exit normally on its own.
+   *
+   * @default - none
+   */
+  readonly stopTimeout?: cdk.Duration;
 
   /**
    * Specifies whether the container is marked essential.
@@ -191,9 +278,22 @@ export interface ContainerDefinitionOptions {
    * Linux-specific modifications that are applied to the container, such as Linux kernel capabilities.
    * For more information see [KernelCapabilities](https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_KernelCapabilities.html).
    *
-   * @default - No Linux paramters.
+   * @default - No Linux parameters.
    */
   readonly linuxParameters?: LinuxParameters;
+
+  /**
+   * The number of GPUs assigned to the container.
+   *
+   * @default - No GPUs assigned.
+   */
+  readonly gpuCount?: number;
+
+  /**
+   * The port mappings to add to the container definition.
+   * @default - No ports are mapped.
+   */
+  readonly portMappings?: PortMapping[];
 }
 
 /**
@@ -211,7 +311,7 @@ export interface ContainerDefinitionProps extends ContainerDefinitionOptions {
 /**
  * A container definition is used in a task definition to describe the containers that are launched as part of a task.
  */
-export class ContainerDefinition extends cdk.Construct {
+export class ContainerDefinition extends CoreConstruct {
   /**
    * The Linux-specific modifications that are applied to the container, such as Linux kernel capabilities.
    */
@@ -239,6 +339,11 @@ export class ContainerDefinition extends cdk.Construct {
   public readonly ulimits = new Array<Ulimit>();
 
   /**
+   * An array dependencies defined for container startup and shutdown.
+   */
+  public readonly containerDependencies = new Array<ContainerDependency>();
+
+  /**
    * Specifies whether the container will be marked essential.
    *
    * If the essential parameter of a container is marked as true, and that container
@@ -246,9 +351,14 @@ export class ContainerDefinition extends cdk.Construct {
    * stopped. If the essential parameter of a container is marked as false, then its
    * failure does not affect the rest of the containers in a task.
    *
-   * If this parameter isomitted, a container is assumed to be essential.
+   * If this parameter is omitted, a container is assumed to be essential.
    */
   public readonly essential: boolean;
+
+  /**
+   * The name of this container
+   */
+  public readonly containerName: string;
 
   /**
    * Whether there was at least one memory limit specified in this definition
@@ -261,29 +371,78 @@ export class ContainerDefinition extends cdk.Construct {
   public readonly taskDefinition: TaskDefinition;
 
   /**
+   * The environment files for this container
+   */
+  public readonly environmentFiles?: EnvironmentFileConfig[];
+
+  /**
+   * The log configuration specification for the container.
+   */
+  public readonly logDriverConfig?: LogDriverConfig;
+
+  /**
+   * Whether this container definition references a specific JSON field of a secret
+   * stored in Secrets Manager.
+   */
+  public readonly referencesSecretJsonField?: boolean;
+
+  /**
    * The configured container links
    */
   private readonly links = new Array<string>();
 
   private readonly imageConfig: ContainerImageConfig;
 
-  private readonly logDriverConfig?: LogDriverConfig;
+  private readonly secrets?: CfnTaskDefinition.SecretProperty[];
 
   /**
    * Constructs a new instance of the ContainerDefinition class.
    */
-  constructor(scope: cdk.Construct, id: string, private readonly props: ContainerDefinitionProps) {
+  constructor(scope: Construct, id: string, private readonly props: ContainerDefinitionProps) {
     super(scope, id);
-    this.essential = props.essential !== undefined ? props.essential : true;
+    if (props.memoryLimitMiB !== undefined && props.memoryReservationMiB !== undefined) {
+      if (props.memoryLimitMiB < props.memoryReservationMiB) {
+        throw new Error('MemoryLimitMiB should not be less than MemoryReservationMiB.');
+      }
+    }
+    this.essential = props.essential ?? true;
     this.taskDefinition = props.taskDefinition;
     this.memoryLimitSpecified = props.memoryLimitMiB !== undefined || props.memoryReservationMiB !== undefined;
     this.linuxParameters = props.linuxParameters;
+    this.containerName = this.node.id;
 
     this.imageConfig = props.image.bind(this, this);
     if (props.logging) {
       this.logDriverConfig = props.logging.bind(this, this);
     }
+
+    if (props.secrets) {
+      this.secrets = [];
+      for (const [name, secret] of Object.entries(props.secrets)) {
+        if (secret.hasField) {
+          this.referencesSecretJsonField = true;
+        }
+        secret.grantRead(this.taskDefinition.obtainExecutionRole());
+        this.secrets.push({
+          name,
+          valueFrom: secret.arn,
+        });
+      }
+    }
+
+    if (props.environmentFiles) {
+      this.environmentFiles = [];
+
+      for (const environmentFile of props.environmentFiles) {
+        this.environmentFiles.push(environmentFile.bind(this));
+      }
+    }
+
     props.taskDefinition._linkContainer(this);
+
+    if (props.portMappings) {
+      this.addPortMappings(...props.portMappings);
+    }
   }
 
   /**
@@ -294,12 +453,12 @@ export class ContainerDefinition extends cdk.Construct {
    */
   public addLink(container: ContainerDefinition, alias?: string) {
     if (this.taskDefinition.networkMode !== NetworkMode.BRIDGE) {
-      throw new Error(`You must use network mode Bridge to add container links.`);
+      throw new Error('You must use network mode Bridge to add container links.');
     }
     if (alias !== undefined) {
-      this.links.push(`${container.node.id}:${alias}`);
+      this.links.push(`${container.containerName}:${alias}`);
     } else {
-      this.links.push(`${container.node.id}`);
+      this.links.push(`${container.containerName}`);
     }
   }
 
@@ -319,14 +478,14 @@ export class ContainerDefinition extends cdk.Construct {
     const mountPoint = {
       containerPath: scratch.containerPath,
       readOnly: scratch.readOnly,
-      sourceVolume: scratch.name
+      sourceVolume: scratch.name,
     };
 
     const volume = {
       host: {
-        sourcePath: scratch.sourcePath
+        sourcePath: scratch.sourcePath,
       },
-      name: scratch.name
+      name: scratch.name,
     };
 
     this.taskDefinition.addVolume(volume);
@@ -340,7 +499,7 @@ export class ContainerDefinition extends cdk.Construct {
     this.portMappings.push(...portMappings.map(pm => {
       if (this.taskDefinition.networkMode === NetworkMode.AWS_VPC || this.taskDefinition.networkMode === NetworkMode.HOST) {
         if (pm.containerPort !== pm.hostPort && pm.hostPort !== undefined) {
-          throw new Error(`Host port ${pm.hostPort} does not match container port ${pm.containerPort}.`);
+          throw new Error(`Host port (${pm.hostPort}) must be left out or equal to container port ${pm.containerPort} for network mode ${this.taskDefinition.networkMode}`);
         }
       }
 
@@ -348,7 +507,7 @@ export class ContainerDefinition extends cdk.Construct {
         if (pm.hostPort === undefined) {
           pm = {
             ...pm,
-            hostPort: 0
+            hostPort: 0,
           };
         }
       }
@@ -362,6 +521,13 @@ export class ContainerDefinition extends cdk.Construct {
    */
   public addUlimits(...ulimits: Ulimit[]) {
     this.ulimits.push(...ulimits);
+  }
+
+  /**
+   * This method adds one or more container dependencies to the container.
+   */
+  public addContainerDependencies(...containerDependencies: ContainerDependency[]) {
+    this.containerDependencies.push(...containerDependencies);
   }
 
   /**
@@ -379,13 +545,27 @@ export class ContainerDefinition extends cdk.Construct {
   }
 
   /**
+   * Returns the host port for the requested container port if it exists
+   */
+  public findPortMapping(containerPort: number, protocol: Protocol): PortMapping | undefined {
+    for (const portMapping of this.portMappings) {
+      const p = portMapping.protocol || Protocol.TCP;
+      const c = portMapping.containerPort;
+      if (c === containerPort && p === protocol) {
+        return portMapping;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * The inbound rules associated with the security group the task or service will use.
    *
    * This property is only used for tasks that use the awsvpc network mode.
    */
   public get ingressPort(): number {
     if (this.portMappings.length === 0) {
-      throw new Error(`Container ${this.node.id} hasn't defined any ports. Call addPortMappings().`);
+      throw new Error(`Container ${this.containerName} hasn't defined any ports. Call addPortMappings().`);
     }
     const defaultPortMapping = this.portMappings[0];
 
@@ -404,7 +584,7 @@ export class ContainerDefinition extends cdk.Construct {
    */
   public get containerPort(): number {
     if (this.portMappings.length === 0) {
-      throw new Error(`Container ${this.node.id} hasn't defined any ports. Call addPortMappings().`);
+      throw new Error(`Container ${this.containerName} hasn't defined any ports. Call addPortMappings().`);
     }
     const defaultPortMapping = this.portMappings[0];
     return defaultPortMapping.containerPort;
@@ -412,12 +592,15 @@ export class ContainerDefinition extends cdk.Construct {
 
   /**
    * Render this container definition to a CloudFormation object
+   *
+   * @param _taskDefinition [disable-awslint:ref-via-interface] (unused but kept to avoid breaking change)
    */
-  public renderContainerDefinition(): CfnTaskDefinition.ContainerDefinitionProperty {
+  public renderContainerDefinition(_taskDefinition?: TaskDefinition): CfnTaskDefinition.ContainerDefinitionProperty {
     return {
       command: this.props.command,
       cpu: this.props.cpu,
       disableNetworking: this.props.disableNetworking,
+      dependsOn: cdk.Lazy.any({ produce: () => this.containerDependencies.map(renderContainerDependency) }, { omitEmptyArray: true }),
       dnsSearchDomains: this.props.dnsSearchDomains,
       dnsServers: this.props.dnsServers,
       dockerLabels: this.props.dockerLabels,
@@ -428,22 +611,27 @@ export class ContainerDefinition extends cdk.Construct {
       image: this.imageConfig.imageName,
       memory: this.props.memoryLimitMiB,
       memoryReservation: this.props.memoryReservationMiB,
-      mountPoints: this.mountPoints.map(renderMountPoint),
-      name: this.node.id,
-      portMappings: this.portMappings.map(renderPortMapping),
+      mountPoints: cdk.Lazy.any({ produce: () => this.mountPoints.map(renderMountPoint) }, { omitEmptyArray: true }),
+      name: this.containerName,
+      portMappings: cdk.Lazy.any({ produce: () => this.portMappings.map(renderPortMapping) }, { omitEmptyArray: true }),
       privileged: this.props.privileged,
       readonlyRootFilesystem: this.props.readonlyRootFilesystem,
       repositoryCredentials: this.imageConfig.repositoryCredentials,
-      ulimits: this.ulimits.map(renderUlimit),
+      startTimeout: this.props.startTimeout && this.props.startTimeout.toSeconds(),
+      stopTimeout: this.props.stopTimeout && this.props.stopTimeout.toSeconds(),
+      ulimits: cdk.Lazy.any({ produce: () => this.ulimits.map(renderUlimit) }, { omitEmptyArray: true }),
       user: this.props.user,
-      volumesFrom: this.volumesFrom.map(renderVolumeFrom),
+      volumesFrom: cdk.Lazy.any({ produce: () => this.volumesFrom.map(renderVolumeFrom) }, { omitEmptyArray: true }),
       workingDirectory: this.props.workingDirectory,
       logConfiguration: this.logDriverConfig,
       environment: this.props.environment && renderKV(this.props.environment, 'name', 'value'),
+      environmentFiles: this.environmentFiles && renderEnvironmentFiles(this.environmentFiles),
+      secrets: this.secrets,
       extraHosts: this.props.extraHosts && renderKV(this.props.extraHosts, 'hostname', 'ipAddress'),
       healthCheck: this.props.healthCheck && renderHealthCheck(this.props.healthCheck),
-      links: this.links,
+      links: cdk.Lazy.list({ produce: () => this.links }, { omitEmpty: true }),
       linuxParameters: this.linuxParameters && this.linuxParameters.renderLinuxParameters(),
+      resourceRequirements: (this.props.gpuCount !== undefined) ? renderResourceRequirements(this.props.gpuCount) : undefined,
     };
   }
 }
@@ -499,7 +687,7 @@ export interface HealthCheck {
   readonly timeout?: cdk.Duration;
 }
 
-function renderKV(env: { [key: string]: string }, keyName: string, valueName: string): any {
+function renderKV(env: { [key: string]: string }, keyName: string, valueName: string): any[] {
   const ret = [];
   for (const [key, value] of Object.entries(env)) {
     ret.push({ [keyName]: key, [valueName]: value });
@@ -507,13 +695,30 @@ function renderKV(env: { [key: string]: string }, keyName: string, valueName: st
   return ret;
 }
 
+function renderEnvironmentFiles(environmentFiles: EnvironmentFileConfig[]): any[] {
+  const ret = [];
+  for (const environmentFile of environmentFiles) {
+    const s3Location = environmentFile.s3Location;
+
+    if (!s3Location) {
+      throw Error('Environment file must specify an S3 location');
+    }
+
+    ret.push({
+      type: environmentFile.fileType,
+      value: `arn:aws:s3:::${s3Location.bucketName}/${s3Location.objectKey}`,
+    });
+  }
+  return ret;
+}
+
 function renderHealthCheck(hc: HealthCheck): CfnTaskDefinition.HealthCheckProperty {
   return {
     command: getHealthCheckCommand(hc),
-    interval: hc.interval != null ? hc.interval.toSeconds() : 30,
-    retries: hc.retries !== undefined ? hc.retries : 3,
-    startPeriod: hc.startPeriod && hc.startPeriod.toSeconds(),
-    timeout: hc.timeout !== undefined ? hc.timeout.toSeconds() : 5,
+    interval: hc.interval?.toSeconds() ?? 30,
+    retries: hc.retries ?? 3,
+    startPeriod: hc.startPeriod?.toSeconds(),
+    timeout: hc.timeout?.toSeconds() ?? 5,
   };
 }
 
@@ -522,7 +727,7 @@ function getHealthCheckCommand(hc: HealthCheck): string[] {
   const hcCommand = new Array<string>();
 
   if (cmd.length === 0) {
-    throw new Error(`At least one argument must be supplied for health check command.`);
+    throw new Error('At least one argument must be supplied for health check command.');
   }
 
   if (cmd.length === 1) {
@@ -530,11 +735,19 @@ function getHealthCheckCommand(hc: HealthCheck): string[] {
     return hcCommand;
   }
 
-  if (cmd[0] !== "CMD" && cmd[0] !== 'CMD-SHELL') {
+  if (cmd[0] !== 'CMD' && cmd[0] !== 'CMD-SHELL') {
     hcCommand.push('CMD');
   }
 
   return hcCommand.concat(cmd);
+}
+
+function renderResourceRequirements(gpuCount: number): CfnTaskDefinition.ResourceRequirementProperty[] | undefined {
+  if (gpuCount === 0) { return undefined; }
+  return [{
+    type: 'GPU',
+    value: gpuCount.toString(),
+  }];
 }
 
 /**
@@ -565,21 +778,21 @@ export interface Ulimit {
  * Type of resource to set a limit on
  */
 export enum UlimitName {
-  CORE = "core",
-  CPU = "cpu",
-  DATA = "data",
-  FSIZE = "fsize",
-  LOCKS = "locks",
-  MEMLOCK = "memlock",
-  MSGQUEUE = "msgqueue",
-  NICE = "nice",
-  NOFILE = "nofile",
-  NPROC = "nproc",
-  RSS = "rss",
-  RTPRIO = "rtprio",
-  RTTIME = "rttime",
-  SIGPENDING = "sigpending",
-  STACK = "stack"
+  CORE = 'core',
+  CPU = 'cpu',
+  DATA = 'data',
+  FSIZE = 'fsize',
+  LOCKS = 'locks',
+  MEMLOCK = 'memlock',
+  MSGQUEUE = 'msgqueue',
+  NICE = 'nice',
+  NOFILE = 'nofile',
+  NPROC = 'nproc',
+  RSS = 'rss',
+  RTPRIO = 'rtprio',
+  RTTIME = 'rttime',
+  SIGPENDING = 'sigpending',
+  STACK = 'stack'
 }
 
 function renderUlimit(ulimit: Ulimit): CfnTaskDefinition.UlimitProperty {
@@ -587,6 +800,58 @@ function renderUlimit(ulimit: Ulimit): CfnTaskDefinition.UlimitProperty {
     name: ulimit.name,
     softLimit: ulimit.softLimit,
     hardLimit: ulimit.hardLimit,
+  };
+}
+/**
+ * The details of a dependency on another container in the task definition.
+ *
+ * @see https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_ContainerDependency.html
+ */
+export interface ContainerDependency {
+  /**
+   * The container to depend on.
+   */
+  readonly container: ContainerDefinition;
+
+  /**
+   * The state the container needs to be in to satisfy the dependency and proceed with startup.
+   * Valid values are ContainerDependencyCondition.START, ContainerDependencyCondition.COMPLETE,
+   * ContainerDependencyCondition.SUCCESS and ContainerDependencyCondition.HEALTHY.
+   *
+   * @default ContainerDependencyCondition.HEALTHY
+   */
+  readonly condition?: ContainerDependencyCondition;
+}
+
+export enum ContainerDependencyCondition {
+  /**
+   * This condition emulates the behavior of links and volumes today.
+   * It validates that a dependent container is started before permitting other containers to start.
+   */
+  START = 'START',
+
+  /**
+   * This condition validates that a dependent container runs to completion (exits) before permitting other containers to start.
+   * This can be useful for nonessential containers that run a script and then exit.
+   */
+  COMPLETE = 'COMPLETE',
+
+  /**
+   * This condition is the same as COMPLETE, but it also requires that the container exits with a zero status.
+   */
+  SUCCESS = 'SUCCESS',
+
+  /**
+   * This condition validates that the dependent container passes its Docker health check before permitting other containers to start.
+   * This requires that the dependent container has health checks configured. This condition is confirmed only at task startup.
+   */
+  HEALTHY = 'HEALTHY',
+}
+
+function renderContainerDependency(containerDependency: ContainerDependency): CfnTaskDefinition.ContainerDependencyProperty {
+  return {
+    containerName: containerDependency.container.containerName,
+    condition: containerDependency.condition || ContainerDependencyCondition.HEALTHY,
   };
 }
 
@@ -635,12 +900,12 @@ export enum Protocol {
   /**
    * TCP
    */
-  TCP = "tcp",
+  TCP = 'tcp',
 
   /**
    * UDP
    */
-  UDP = "udp",
+  UDP = 'udp',
 }
 
 function renderPortMapping(pm: PortMapping): CfnTaskDefinition.PortMappingProperty {

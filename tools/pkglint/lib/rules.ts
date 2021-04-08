@@ -1,19 +1,20 @@
-import caseUtils = require('case');
-import fs = require('fs');
-import path = require('path');
-import semver = require('semver');
+import * as fs from 'fs';
+import * as path from 'path';
+import * as caseUtils from 'case';
+import * as glob from 'glob';
+import * as semver from 'semver';
 import { LICENSE, NOTICE } from './licensing';
 import { PackageJson, ValidationRule } from './packagejson';
 import {
   deepGet, deepSet,
   expectDevDependency, expectJSON,
-  fileShouldBe, fileShouldContain,
+  fileShouldBe, fileShouldBeginWith, fileShouldContain,
+  fileShouldNotContain,
   findInnerPackages,
-  monoRepoRoot, monoRepoVersion
+  monoRepoRoot,
 } from './util';
 
-// tslint:disable-next-line: no-var-requires
-const AWS_SERVICE_NAMES = require('./aws-service-official-names.json');
+const AWS_SERVICE_NAMES = require('./aws-service-official-names.json'); // eslint-disable-line @typescript-eslint/no-require-imports
 
 /**
  * Verify that the package name matches the directory name
@@ -25,8 +26,8 @@ export class PackageNameMatchesDirectoryName extends ValidationRule {
     const parts = pkg.packageRoot.split(path.sep);
 
     const expectedName = parts[parts.length - 2].startsWith('@')
-               ? parts.slice(parts.length - 2).join('/')
-               : parts[parts.length - 1];
+      ? parts.slice(parts.length - 2).join('/')
+      : parts[parts.length - 1];
 
     expectJSON(this.name, pkg, 'name', expectedName);
   }
@@ -43,6 +44,66 @@ export class DescriptionIsRequired extends ValidationRule {
       pkg.report({ ruleName: this.name, message: 'Description is required' });
     }
   }
+}
+
+/**
+ * Verify that all packages have a publishConfig with a publish tag set.
+ */
+export class PublishConfigTagIsRequired extends ValidationRule {
+  public readonly name = 'package-info/publish-config-tag';
+
+  public validate(pkg: PackageJson): void {
+    if (pkg.json.private) { return; }
+
+    // While v2 is still under development, we publish all v2 packages with the 'next'
+    // distribution tag, while still tagging all v1 packages as 'latest'.
+    // The one exception is 'aws-cdk-lib', since it's a new package for v2.
+    const newV2Packages = ['aws-cdk-lib'];
+    const defaultPublishTag = (cdkMajorVersion() === 2 && !newV2Packages.includes(pkg.json.name)) ? 'next' : 'latest';
+
+    if (pkg.json.publishConfig?.tag !== defaultPublishTag) {
+      pkg.report({
+        ruleName: this.name,
+        message: `publishConfig.tag must be ${defaultPublishTag}`,
+        fix: (() => {
+          const publishConfig = pkg.json.publishConfig ?? {};
+          publishConfig.tag = defaultPublishTag;
+          pkg.json.publishConfig = publishConfig;
+        }),
+      });
+    }
+  }
+}
+
+/**
+ * Verify cdk.out directory is included in npmignore since we should not be
+ * publishing it.
+ */
+export class CdkOutMustBeNpmIgnored extends ValidationRule {
+
+  public readonly name = 'package-info/npm-ignore-cdk-out';
+
+  public validate(pkg: PackageJson): void {
+
+    const npmIgnorePath = path.join(pkg.packageRoot, '.npmignore');
+
+    if (fs.existsSync(npmIgnorePath)) {
+
+      const npmIgnore = fs.readFileSync(npmIgnorePath);
+
+      if (!npmIgnore.includes('**/cdk.out')) {
+        pkg.report({
+          ruleName: this.name,
+          message: `${npmIgnorePath}: Must exclude **/cdk.out`,
+          fix: () => fs.writeFileSync(
+            npmIgnorePath,
+            `${npmIgnore}\n# exclude cdk artifacts\n**/cdk.out`,
+          ),
+        });
+      }
+    }
+  }
+
 }
 
 /**
@@ -99,7 +160,47 @@ export class NoticeFile extends ValidationRule {
   public readonly name = 'license/notice-file';
 
   public validate(pkg: PackageJson): void {
-    fileShouldBe(this.name, pkg, 'NOTICE', NOTICE);
+    fileShouldBeginWith(this.name, pkg, 'NOTICE', ...NOTICE.split('\n'));
+  }
+}
+
+/**
+ * NOTICE files must contain 3rd party attributions
+ */
+export class ThirdPartyAttributions extends ValidationRule {
+  public readonly name = 'license/3p-attributions';
+
+  public validate(pkg: PackageJson): void {
+    const alwaysCheck = ['monocdk', 'aws-cdk-lib'];
+    if (pkg.json.private && !alwaysCheck.includes(pkg.json.name)) {
+      return;
+    }
+    const bundled = pkg.getAllBundledDependencies().filter(dep => !dep.startsWith('@aws-cdk'));
+    const attribution = pkg.json.pkglint?.attribution ?? [];
+    const noticePath = path.join(pkg.packageRoot, 'NOTICE');
+    const lines = fs.existsSync(noticePath)
+      ? fs.readFileSync(noticePath, { encoding: 'utf8' }).split('\n')
+      : [];
+
+    const re = /^\*\* (\S+)/;
+    const attributions = lines.filter(l => re.test(l)).map(l => l.match(re)![1]);
+
+    for (const dep of bundled) {
+      if (!attributions.includes(dep)) {
+        pkg.report({
+          message: `Missing attribution for bundled dependency '${dep}' in NOTICE file.`,
+          ruleName: this.name,
+        });
+      }
+    }
+    for (const attr of attributions) {
+      if (!bundled.includes(attr) && !attribution.includes(attr)) {
+        pkg.report({
+          message: `Unnecessary attribution found for dependency '${attr}' in NOTICE file. Attribution is determined from package.json (all "bundledDependencies" or the list in "pkglint.attribution")`,
+          ruleName: this.name,
+        });
+      }
+    }
   }
 }
 
@@ -129,6 +230,9 @@ export class ReadmeFile extends ValidationRule {
     if (!scopes) {
       return;
     }
+    if (pkg.packageName === '@aws-cdk/core') {
+      return;
+    }
     const scope: string = typeof scopes === 'string' ? scopes : scopes[0];
     const serviceName = AWS_SERVICE_NAMES[scope];
 
@@ -141,13 +245,13 @@ export class ReadmeFile extends ValidationRule {
         fix: () => fs.writeFileSync(
           readmeFile,
           [
-            `## ${headline || pkg.json.description}`,
-            'This module is part of the[AWS Cloud Development Kit](https://github.com/aws/aws-cdk) project.'
-          ].join('\n')
-        )
+            `# ${headline || pkg.json.description}`,
+            'This module is part of the[AWS Cloud Development Kit](https://github.com/aws/aws-cdk) project.',
+          ].join('\n'),
+        ),
       });
     } else if (headline) {
-      const requiredFirstLine = `## ${headline}`;
+      const requiredFirstLine = `# ${headline}`;
       const [firstLine, ...rest] = fs.readFileSync(readmeFile, { encoding: 'utf8' }).split('\n');
       if (firstLine !== requiredFirstLine) {
         pkg.report({
@@ -161,7 +265,163 @@ export class ReadmeFile extends ValidationRule {
 }
 
 /**
- * There must be a stability setting, and that the appropriate banner is present in the README.md file.
+ * All packages must have a "maturity" declaration.
+ *
+ * The banner in the README must match the package maturity.
+ *
+ * As a way to seed the settings, if 'maturity' is missing but can
+ * be auto-derived from 'stability', that will be the fix (otherwise
+ * there is no fix).
+ */
+export class MaturitySetting extends ValidationRule {
+  public readonly name = 'package-info/maturity';
+
+  public validate(pkg: PackageJson): void {
+    if (pkg.json.private) {
+      // Does not apply to private packages!
+      return;
+    }
+
+    if (pkg.json.features) {
+      // Skip this in favour of the FeatureStabilityRule.
+      return;
+    }
+
+    let maturity = pkg.json.maturity as string | undefined;
+    const stability = pkg.json.stability as string | undefined;
+    if (!maturity) {
+      let fix;
+      if (stability && ['stable', 'deprecated'].includes(stability)) {
+        // We can autofix!
+        fix = () => pkg.json.maturity = stability;
+        maturity = stability;
+      }
+
+      pkg.report({
+        ruleName: this.name,
+        message: `Package is missing "maturity" setting (expected one of ${Object.keys(MATURITY_TO_STABILITY)})`,
+        fix,
+      });
+    }
+
+    if (pkg.json.deprecated && maturity !== 'deprecated') {
+      pkg.report({
+        ruleName: this.name,
+        message: `Package is deprecated, but is marked with maturity "${maturity}"`,
+        fix: () => pkg.json.maturity = 'deprecated',
+      });
+      maturity = 'deprecated';
+    }
+
+    const packageLevels = this.determinePackageLevels(pkg);
+
+    const hasL1s = packageLevels.some(level => level === 'l1');
+    const hasL2s = packageLevels.some(level => level === 'l2');
+    if (hasL2s) {
+      // validate that a package that contains L2s does not declare a 'cfn-only' maturity
+      if (maturity === 'cfn-only') {
+        pkg.report({
+          ruleName: this.name,
+          message: "Package that contains any L2s cannot declare a 'cfn-only' maturity",
+          fix: () => pkg.json.maturity = 'experimental',
+        });
+      }
+    } else if (hasL1s) {
+      // validate that a package that contains only L1s declares a 'cfn-only' maturity
+      if (maturity !== 'cfn-only') {
+        pkg.report({
+          ruleName: this.name,
+          message: "Package that contains only L1s cannot declare a maturity other than 'cfn-only'",
+          fix: () => pkg.json.maturity = 'cfn-only',
+        });
+      }
+    }
+
+    if (maturity) {
+      this.validateReadmeHasBanner(pkg, maturity, packageLevels);
+    }
+  }
+
+  private validateReadmeHasBanner(pkg: PackageJson, maturity: string, levelsPresent: string[]) {
+    const badge = this.readmeBadge(maturity, levelsPresent);
+    if (!badge) {
+      // Somehow, we don't have a badge for this stability level
+      return;
+    }
+    const readmeFile = path.join(pkg.packageRoot, 'README.md');
+    if (!fs.existsSync(readmeFile)) {
+      // Presence of the file is asserted by another rule
+      return;
+    }
+
+    const readmeContent = fs.readFileSync(readmeFile, { encoding: 'utf8' });
+    const badgeRegex = toRegExp(badge);
+    if (!badgeRegex.test(readmeContent)) {
+      // Removing a possible old, now invalid stability indication from the README.md before adding a new one
+      const [title, ...body] = readmeContent.replace(/<!--BEGIN STABILITY BANNER-->(?:.|\n)+<!--END STABILITY BANNER-->\n+/m, '').split('\n');
+      pkg.report({
+        ruleName: this.name,
+        message: `Missing stability banner for ${maturity} in README.md file`,
+        fix: () => fs.writeFileSync(readmeFile, [title, badge, ...body].join('\n')),
+      });
+    }
+  }
+
+  private readmeBadge(maturity: string, levelsPresent: string[]) {
+    const bannerContents = levelsPresent
+      .map(level => fs.readFileSync(path.join(__dirname, 'banners', `${level}.${maturity}.md`), { encoding: 'utf-8' }).trim())
+      .join('\n\n')
+      .trim();
+
+    const bannerLines = bannerContents.split('\n').map(s => s.trimRight());
+
+    return [
+      '<!--BEGIN STABILITY BANNER-->',
+      '',
+      '---',
+      '',
+      ...bannerLines,
+      '',
+      '---',
+      '',
+      '<!--END STABILITY BANNER-->',
+      '',
+    ].join('\n');
+  }
+
+  private determinePackageLevels(pkg: PackageJson): string[] {
+    // Used to determine L1 by the presence of a .generated.ts file, but that depends
+    // on the source having been built. Much more robust to look at the build INSTRUCTIONS
+    // to see if this package has L1s.
+    const hasL1 = !!pkg.json['cdk-build']?.cloudformation;
+
+    const libFiles = glob.sync('lib/**/*.ts', {
+      ignore: 'lib/**/*.d.ts', // ignore the generated TS declaration files
+    });
+    const hasL2 = libFiles.some(f => !f.endsWith('.generated.ts') && !f.endsWith('index.ts'));
+
+    return [
+      ...hasL1 ? ['l1'] : [],
+      // If we don't have L1, then at least always paste in the L2 banner
+      ...hasL2 || !hasL1 ? ['l2'] : [],
+    ];
+  }
+}
+
+const MATURITY_TO_STABILITY: Record<string, string> = {
+  'cfn-only': 'experimental',
+  'experimental': 'experimental',
+  'developer-preview': 'experimental',
+  'stable': 'stable',
+  'deprecated': 'deprecated',
+};
+
+/**
+ * There must be a stability setting, and it must match the package maturity.
+ *
+ * Maturity setting is leading here (as there are more options than the
+ * stability setting), but the stability setting must be present for `jsii`
+ * to properly read and encode it into the assembly.
  */
 export class StabilitySetting extends ValidationRule {
   public readonly name = 'package-info/stability';
@@ -172,96 +432,112 @@ export class StabilitySetting extends ValidationRule {
       return;
     }
 
-    let stability = pkg.json.stability;
-    switch (stability) {
-      case 'experimental':
-      case 'stable':
-      case 'deprecated':
-        if (pkg.json.deprecated && stability !== 'deprecated') {
-          pkg.report({
-            ruleName: this.name,
-            message: `Package is deprecated, but is marked with stability "${stability}"`,
-            fix: () => pkg.json.stability = 'deprecated',
-          });
-          stability = 'deprecated';
-        }
-        break;
-      default:
-        const defaultStability = pkg.json.deprecated ? 'deprecated' : 'experimental';
-        pkg.report({
-          ruleName: this.name,
-          message: `Invalid stability configuration in package.json: ${JSON.stringify(stability)}`,
-          fix: () => pkg.json.stability = defaultStability,
-        });
-        stability = defaultStability;
-    }
-    this.validateReadmeHasBanner(pkg, stability);
-  }
-
-  private validateReadmeHasBanner(pkg: PackageJson, stability: string) {
-    const badge = this.readmeBadge(stability);
-    if (!badge) {
-      // Somehow, we don't have a badge for this stability level
+    if (pkg.json.features) {
+      // Skip this in favour of the FeatureStabilityRule.
       return;
     }
+
+    const maturity = pkg.json.maturity as string | undefined;
+    const stability = pkg.json.stability as string | undefined;
+
+    const expectedStability = maturity ? MATURITY_TO_STABILITY[maturity] : undefined;
+    if (!stability || (expectedStability && stability !== expectedStability)) {
+      pkg.report({
+        ruleName: this.name,
+        message: `stability is '${stability}', but based on maturity is expected to be '${expectedStability}'`,
+        fix: expectedStability ? (() => pkg.json.stability = expectedStability) : undefined,
+      });
+    }
+  }
+}
+
+export class FeatureStabilityRule extends ValidationRule {
+  public readonly name = 'package-info/feature-stability';
+  private readonly badges: { [key: string]: string } = {
+    'Not Implemented': 'https://img.shields.io/badge/not--implemented-black.svg?style=for-the-badge',
+    'Experimental': 'https://img.shields.io/badge/experimental-important.svg?style=for-the-badge',
+    'Developer Preview': 'https://img.shields.io/badge/developer--preview-informational.svg?style=for-the-badge',
+    'Stable': 'https://img.shields.io/badge/stable-success.svg?style=for-the-badge',
+  };
+
+  public validate(pkg: PackageJson): void {
+    if (pkg.json.private || !pkg.json.features) {
+      return;
+    }
+
+    const featuresColumnWitdh = Math.max(
+      13, // 'CFN Resources'.length
+      ...pkg.json.features.map((feat: { name: string; }) => feat.name.length),
+    );
+
+    const stabilityBanner: string = [
+      '<!--BEGIN STABILITY BANNER-->',
+      '',
+      '---',
+      '',
+      `Features${' '.repeat(featuresColumnWitdh - 8)} | Stability`,
+      `--------${'-'.repeat(featuresColumnWitdh - 8)}-|-----------${'-'.repeat(Math.max(0, 100 - featuresColumnWitdh - 13))}`,
+      ...this.featureEntries(pkg, featuresColumnWitdh),
+      '',
+      ...this.bannerNotices(pkg),
+      '---',
+      '',
+      '<!--END STABILITY BANNER-->',
+      '',
+    ].join('\n');
+
     const readmeFile = path.join(pkg.packageRoot, 'README.md');
     if (!fs.existsSync(readmeFile)) {
       // Presence of the file is asserted by another rule
       return;
     }
     const readmeContent = fs.readFileSync(readmeFile, { encoding: 'utf8' });
-    const badgeRegex = new RegExp(badge.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\w+/g, '\\w+'));
-    if (!badgeRegex.test(readmeContent)) {
-      // Removing a possible old, now invalid stability indication from the README.md before adding a new one
+    const stabilityRegex = toRegExp(stabilityBanner);
+    if (!stabilityRegex.test(readmeContent)) {
       const [title, ...body] = readmeContent.replace(/<!--BEGIN STABILITY BANNER-->(?:.|\n)+<!--END STABILITY BANNER-->\n+/m, '').split('\n');
       pkg.report({
         ruleName: this.name,
-        message: `Missing stability banner for ${stability} in README.md file`,
-        fix: () => fs.writeFileSync(readmeFile, [title, badge, ...body].join('\n')),
+        message: 'Stability banner does not match as expected',
+        fix: () => fs.writeFileSync(readmeFile, [title, stabilityBanner, ...body].join('\n')),
       });
     }
   }
 
-  private readmeBadge(stability: string) {
-    switch (stability) {
-      case 'deprecated':
-        return _div(
-          { label: 'Deprecated', color: 'critical' },
-          'This API may emit warnings. Backward compatibility is not guaranteed.',
-        );
-      case 'experimental':
-        return _div(
-          { label: 'Experimental', color: 'important' },
-          '**This is a _developer preview_ (public beta) module. Releases might lack important features and might have',
-          'future breaking changes.**',
-          '',
-          'This API is still under active development and subject to non-backward',
-          'compatible changes or removal in any future version. Use of the API is not recommended in production',
-          'environments. Experimental APIs are not subject to the Semantic Versioning model.',
-        );
-      case 'stable':
-        return _div(
-          { label: 'Stable', color: 'success' },
-        );
-      default:
-        return undefined;
+  private featureEntries(pkg: PackageJson, featuresColumnWitdh: number): string[] {
+    const entries: string[] = [];
+    if (pkg.json['cdk-build']?.cloudformation) {
+      entries.push(`CFN Resources${' '.repeat(featuresColumnWitdh - 13)} | ![Stable](${this.badges.Stable})`);
+    }
+    pkg.json.features.forEach((feature: { [key: string]: string }) => {
+      const badge = this.badges[feature.stability];
+      if (!badge) {
+        throw new Error(`Unknown stability - ${feature.stability}`);
+      }
+      entries.push(`${feature.name}${' '.repeat(featuresColumnWitdh - feature.name.length)} | ![${feature.stability}](${badge})`);
+    });
+    return entries;
+  }
+
+  private bannerNotices(pkg: PackageJson): string[] {
+    const notices: string[] = [];
+    if (pkg.json['cdk-build']?.cloudformation) {
+      notices.push(readBannerFile('features-cfn-stable.md'));
+      notices.push('');
     }
 
-    function _div(badge: { label: string, color: string }, ...messages: string[]) {
-      return [
-        '<!--BEGIN STABILITY BANNER-->',
-        '',
-        '---',
-        '',
-        `![Stability: ${badge.label}](https://img.shields.io/badge/stability-${badge.label}-${badge.color}.svg?style=for-the-badge)`,
-        '',
-        ...messages.map(message => `> ${message}`.trimRight()),
-        '',
-        '---',
-        '<!--END STABILITY BANNER-->',
-        '',
-      ].join('\n');
+    const noticeOrder = ['Experimental', 'Developer Preview', 'Stable'];
+    const stabilities = pkg.json.features.map((f: { [k: string]: string }) => f.stability);
+    const filteredNotices = noticeOrder.filter(v => stabilities.includes(v));
+    for (const notice of filteredNotices) {
+      if (notices.length !== 0) {
+        // This delimiter helps ensure proper parsing & rendering with various parsers
+        notices.push('<!-- -->', '');
+      }
+      const lowerTrainCase = notice.toLowerCase().replace(/\s/g, '-');
+      notices.push(readBannerFile(`features-${lowerTrainCase}.md`));
+      notices.push('');
     }
+    return notices;
   }
 }
 
@@ -276,7 +552,7 @@ export class CDKKeywords extends ValidationRule {
       pkg.report({
         ruleName: this.name,
         message: 'Must have keywords',
-        fix: () => { pkg.json.keywords = []; }
+        fix: () => { pkg.json.keywords = []; },
       });
     }
 
@@ -286,7 +562,7 @@ export class CDKKeywords extends ValidationRule {
       pkg.report({
         ruleName: this.name,
         message: 'Keywords must mention CDK',
-        fix: () => { pkg.json.keywords.splice(0, 0, 'cdk'); }
+        fix: () => { pkg.json.keywords.splice(0, 0, 'cdk'); },
       });
     }
 
@@ -294,20 +570,83 @@ export class CDKKeywords extends ValidationRule {
       pkg.report({
         ruleName: this.name,
         message: 'Keywords must mention AWS',
-        fix: () => { pkg.json.keywords.splice(0, 0, 'aws'); }
+        fix: () => { pkg.json.keywords.splice(0, 0, 'aws'); },
       });
     }
   }
 }
 
-export class DeveloperPreviewVersionLabels extends ValidationRule {
-  public readonly name = 'jsii/developer-preview-version-label';
+/**
+ * Requires projectReferences to be set in the jsii configuration.
+ */
+export class JSIIProjectReferences extends ValidationRule {
+  public readonly name = 'jsii/project-references';
 
   public validate(pkg: PackageJson): void {
-    if (!isJSII(pkg)) { return; }
+    if (!isJSII(pkg)) {
+      return;
+    }
 
-    expectJSON(this.name, pkg, 'jsii.targets.java.maven.versionSuffix', '.DEVPREVIEW');
-    expectJSON(this.name, pkg, 'jsii.targets.dotnet.versionSuffix', '-devpreview');
+    expectJSON(
+      this.name,
+      pkg,
+      'jsii.projectReferences',
+      pkg.json.name !== 'monocdk' && pkg.json.name !== 'aws-cdk-lib',
+    );
+  }
+}
+
+export class NoPeerDependenciesMonocdk extends ValidationRule {
+  public readonly name = 'monocdk/no-peer';
+  private readonly allowedPeer = ['constructs'];
+  private readonly modules = ['monocdk', 'aws-cdk-lib'];
+
+  public validate(pkg: PackageJson): void {
+    if (!this.modules.includes(pkg.packageName)) {
+      return;
+    }
+
+    const peers = Object.keys(pkg.peerDependencies).filter(peer => !this.allowedPeer.includes(peer));
+    if (peers.length > 0) {
+      pkg.report({
+        ruleName: this.name,
+        message: `Adding a peer dependency to the monolithic package ${pkg.packageName} is a breaking change, and thus not allowed.
+         Added ${peers.join(' ')}`,
+      });
+    }
+  }
+}
+
+/**
+ * Validates that the same version of `constructs` is used wherever a dependency
+ * is specified, so that they must all be udpated at the same time (through an
+ * update to this rule).
+ *
+ * Note: v1 and v2 use different versions respectively.
+ */
+export class ConstructsVersion extends ValidationRule {
+  public static readonly VERSION = cdkMajorVersion() === 2
+    ? '10.0.0-pre.5'
+    : '^3.3.69';
+
+  public readonly name = 'deps/constructs';
+
+  public validate(pkg: PackageJson) {
+    const toCheck = new Array<string>();
+
+    if ('constructs' in pkg.dependencies) {
+      toCheck.push('dependencies');
+    }
+    if ('constructs' in pkg.devDependencies) {
+      toCheck.push('devDependencies');
+    }
+    if ('constructs' in pkg.peerDependencies) {
+      toCheck.push('peerDependencies');
+    }
+
+    for (const cfg of toCheck) {
+      expectJSON(this.name, pkg, `${cfg}.constructs`, ConstructsVersion.VERSION);
+    }
   }
 }
 
@@ -334,7 +673,7 @@ export class JSIIJavaPackageIsRequired extends ValidationRule {
         pkg.report({
           ruleName: this.name,
           message: `JSII "java" package must share the first 3 elements of the expected one: ${expectedPrefix} vs ${actualPrefix}`,
-          fix: () => deepSet(pkg.json, ['jsii', 'targets', 'java', 'package'], moduleName.javaPackage)
+          fix: () => deepSet(pkg.json, ['jsii', 'targets', 'java', 'package'], moduleName.javaPackage),
         });
       }
     }
@@ -349,32 +688,11 @@ export class JSIIPythonTarget extends ValidationRule {
 
     const moduleName = cdkModuleName(pkg.json.name);
 
+    // See: https://github.com/aws/jsii/blob/master/docs/configuration.md#configuring-python
+
     expectJSON(this.name, pkg, 'jsii.targets.python.distName', moduleName.python.distName);
     expectJSON(this.name, pkg, 'jsii.targets.python.module', moduleName.python.module);
-  }
-}
-
-export class AWSDocsMetadata extends ValidationRule {
-  public readonly name = 'jsii/awsdocs';
-
-  public validate(pkg: PackageJson): void {
-    const scopes = pkg.json['cdk-build'] && pkg.json['cdk-build'].cloudformation;
-    if (!scopes) {
-      return;
-    }
-    const scope: string = typeof scopes === 'string' ? scopes : scopes[0];
-    const serviceName = AWS_SERVICE_NAMES[scope];
-    const title = deepGet(pkg.json, ['jsii', 'metadata', 'awsdocs:title']);
-    if (!title || (serviceName && serviceName !== title)) {
-      pkg.report({
-        ruleName: this.name,
-        message: [
-          `JSII packages bound to a CloudFormation scope must have the awsdocs:title JSII metadata entry.`,
-          `Service names are recorded in ${require.resolve('./aws-service-official-names.json')}`,
-        ].join('\n'),
-        fix: serviceName ? () => deepSet(pkg.json, ['jsii', 'metadata', 'awsdocs:title'], serviceName) : undefined
-      });
-    }
+    expectJSON(this.name, pkg, 'jsii.targets.python.classifiers', ['Framework :: AWS CDK', 'Framework :: AWS CDK :: 1']);
   }
 }
 
@@ -387,6 +705,7 @@ export class CDKPackage extends ValidationRule {
 
     const merkleMarker = '.LAST_PACKAGE';
 
+    if (!shouldUseCDKBuildTools(pkg)) { return; }
     expectJSON(this.name, pkg, 'scripts.package', 'cdk-package');
 
     const outdir = 'dist';
@@ -404,7 +723,7 @@ export class CDKPackage extends ValidationRule {
 }
 
 export class NoTsBuildInfo extends ValidationRule {
-  public readonly name = 'no-tsc-build-info';
+  public readonly name = 'npmignore/tsbuildinfo';
 
   public validate(pkg: PackageJson): void {
     // skip private packages
@@ -415,6 +734,47 @@ export class NoTsBuildInfo extends ValidationRule {
     // We might at some point also want to strip tsconfig.json but for now,
     // the TypeScript DOCS BUILD needs to it to load the typescript source.
     fileShouldContain(this.name, pkg, '.npmignore', '*.tsbuildinfo');
+  }
+}
+
+export class NoTestsInNpmPackage extends ValidationRule {
+  public readonly name = 'npmignore/test';
+
+  public validate(pkg: PackageJson): void {
+    // skip private packages
+    if (pkg.json.private) { return; }
+
+    // Skip the CLI package, as its 'test' subdirectory is used at runtime.
+    if (pkg.packageName === 'aws-cdk') { return; }
+
+    // Exclude 'test/' directories from being packaged
+    fileShouldContain(this.name, pkg, '.npmignore', 'test/');
+  }
+}
+
+export class NoTsConfig extends ValidationRule {
+  public readonly name = 'npmignore/tsconfig';
+
+  public validate(pkg: PackageJson): void {
+    // skip private packages
+    if (pkg.json.private) { return; }
+
+    fileShouldContain(this.name, pkg, '.npmignore', 'tsconfig.json');
+  }
+}
+
+export class IncludeJsiiInNpmTarball extends ValidationRule {
+  public readonly name = 'npmignore/jsii-included';
+
+  public validate(pkg: PackageJson): void {
+    // only jsii modules
+    if (!isJSII(pkg)) { return; }
+
+    // skip private packages
+    if (pkg.json.private) { return; }
+
+    fileShouldNotContain(this.name, pkg, '.npmignore', '.jsii');
+    fileShouldContain(this.name, pkg, '.npmignore', '!.jsii'); // make sure .jsii is included
   }
 }
 
@@ -432,7 +792,7 @@ export class NoJsiiDep extends ValidationRule {
       pkg.report({
         ruleName: this.name,
         message: 'packages should not have a devDep on jsii since it is defined at the repo level',
-        fix: () => pkg.removeDevDependency(predicate)
+        fix: () => pkg.removeDevDependency(predicate),
       });
     }
   }
@@ -446,11 +806,11 @@ export class NodeCompatibility extends ValidationRule {
 
   public validate(pkg: PackageJson): void {
     const atTypesNode = pkg.getDevDependency('@types/node');
-    if (atTypesNode && !atTypesNode.startsWith('^8.')) {
+    if (atTypesNode && !atTypesNode.startsWith('^10.')) {
       pkg.report({
         ruleName: this.name,
-        message: `packages must support node version 8 and up, but ${atTypesNode} is declared`,
-        fix: () => pkg.addDevDependency('@types/node', '^8.10.38')
+        message: `packages must support node version 10 and up, but ${atTypesNode} is declared`,
+        fix: () => pkg.addDevDependency('@types/node', '^10.17.5'),
       });
     }
   }
@@ -471,10 +831,14 @@ export class NoAtTypesInDependencies extends ValidationRule {
         fix: () => {
           pkg.addDevDependency(dependency.name, dependency.version);
           pkg.removeDependency(predicate);
-        }
+        },
       });
     }
   }
+}
+
+function isCdkModuleName(name: string) {
+  return !!name.match(/^@aws-cdk\//);
 }
 
 /**
@@ -491,7 +855,7 @@ function cdkModuleName(name: string) {
     .map(s => s === 'aws' ? 'AWS' : caseUtils.pascal(s))
     .join('.');
 
-  const pythonName = name.replace(/^@/g, "").replace(/\//g, ".").split(".").map(caseUtils.kebab).join(".");
+  const pythonName = name.replace(/^@/g, '').replace(/\//g, '.').split('.').map(caseUtils.kebab).join('.');
 
   return {
     javaPackage: `software.amazon.awscdk${isLegacyCdkPkg ? '' : `.${name.replace(/^aws-/, 'services-').replace(/-/g, '.')}`}`,
@@ -499,11 +863,12 @@ function cdkModuleName(name: string) {
       isLegacyCdkPkg ? 'cdk'
         : isCdkPkg ? 'core'
           : name.startsWith('aws-') || name.startsWith('alexa-') ? name.replace(/^aws-/, '')
-            : `cdk-${name}`,
+            : name.startsWith('cdk-') ? name
+              : `cdk-${name}`,
     dotnetNamespace: `Amazon.CDK${isCdkPkg ? '' : `.${dotnetSuffix}`}`,
     python: {
       distName: `aws-cdk.${pythonName}`,
-      module: `aws_cdk.${pythonName.replace(/-/g, "_")}`,
+      module: `aws_cdk.${pythonName.replace(/-/g, '_')}`,
     },
   };
 }
@@ -532,7 +897,7 @@ export class JSIIDotNetNamespaceIsRequired extends ValidationRule {
         pkg.report({
           ruleName: this.name,
           message: `.NET namespace must share the first two segments of the default namespace, '${expectedPrefix}' vs '${actualPrefix}'`,
-          fix: () => deepSet(pkg.json, ['jsii', 'targets', 'dotnet', 'namespace'], moduleName.dotnetNamespace)
+          fix: () => deepSet(pkg.json, ['jsii', 'targets', 'dotnet', 'namespace'], moduleName.dotnetNamespace),
         });
       }
     }
@@ -540,37 +905,16 @@ export class JSIIDotNetNamespaceIsRequired extends ValidationRule {
 }
 
 /**
- * Strong-naming all .NET assemblies is required.
+ * JSII .NET namespace is required and must look sane
  */
-export class JSIIDotNetStrongNameIsRequired extends ValidationRule {
-  public readonly name = 'jsii/dotnet/strong-name';
+export class JSIIDotNetIconUrlIsRequired extends ValidationRule {
+  public readonly name = 'jsii/dotnet/icon-url';
 
   public validate(pkg: PackageJson): void {
     if (!isJSII(pkg)) { return; }
 
-    // skip the legacy @aws-cdk/cdk because we actually did not rename
-    // the .NET module, so we are not publishing the deprecated one
-    if (pkg.packageName === '@aws-cdk/cdk') { return; }
-
-    const signAssembly = deepGet(pkg.json, ['jsii', 'targets', 'dotnet', 'signAssembly']) as boolean | undefined;
-    const signAssemblyExpected = true;
-    if (signAssembly !== signAssemblyExpected) {
-      pkg.report({
-        ruleName: this.name,
-        message: `.NET packages must have strong-name signing enabled.`,
-        fix: () => deepSet(pkg.json, ['jsii', 'targets', 'dotnet', 'signAssembly'], signAssemblyExpected)
-      });
-    }
-
-    const assemblyOriginatorKeyFile = deepGet(pkg.json, ['jsii', 'targets', 'dotnet', 'assemblyOriginatorKeyFile']) as string | undefined;
-    const assemblyOriginatorKeyFileExpected = "../../key.snk";
-    if (assemblyOriginatorKeyFile !== assemblyOriginatorKeyFileExpected) {
-      pkg.report({
-        ruleName: this.name,
-        message: `.NET packages must use the strong name key fetched by fetch-dotnet-snk.sh`,
-        fix: () => deepSet(pkg.json, ['jsii', 'targets', 'dotnet', 'assemblyOriginatorKeyFile'], assemblyOriginatorKeyFileExpected)
-      });
-    }
+    const CDK_LOGO_URL = 'https://raw.githubusercontent.com/aws/aws-cdk/master/logo/default-256-dark.png';
+    expectJSON(this.name, pkg, 'jsii.targets.dotnet.iconUrl', CDK_LOGO_URL);
   }
 }
 
@@ -583,7 +927,10 @@ export class MustDependOnBuildTools extends ValidationRule {
   public validate(pkg: PackageJson): void {
     if (!shouldUseCDKBuildTools(pkg)) { return; }
 
-    expectDevDependency(this.name, pkg, 'cdk-build-tools', '^' + monoRepoVersion());
+    expectDevDependency(this.name,
+      pkg,
+      'cdk-build-tools',
+      `${require('../../cdk-build-tools/package.json').version}`); // eslint-disable-line @typescript-eslint/no-require-imports
   }
 }
 
@@ -634,7 +981,62 @@ export class RegularDependenciesMustSatisfyPeerDependencies extends ValidationRu
         pkg.report({
           ruleName: this.name,
           message: `dependency ${depName}: concrete version ${depVersion} does not match peer version '${peerVersion}'`,
-          fix: () => pkg.addPeerDependency(depName, depVersion)
+          fix: () => pkg.addPeerDependency(depName, depVersion),
+        });
+      }
+    }
+  }
+}
+
+/**
+ * Check that dependencies on @aws-cdk/ packages use point versions (not version ranges)
+ * and that they are also defined in `peerDependencies`.
+ */
+export class MustDependonCdkByPointVersions extends ValidationRule {
+  public readonly name = 'dependencies/cdk-point-dependencies';
+
+  public validate(pkg: PackageJson): void {
+    // yes, ugly, but we have a bunch of references to other files in the repo.
+    // we use the root package.json to determine what should be the version
+    // across the repo: in local builds, this should be 0.0.0 and in CI builds
+    // this would be the actual version of the repo after it's been aligned
+    // using scripts/align-version.sh
+    const expectedVersion = require('../../../package.json').version; // eslint-disable-line @typescript-eslint/no-require-imports
+    const ignore = [
+      '@aws-cdk/cloudformation-diff',
+      '@aws-cdk/cfnspec',
+      '@aws-cdk/cx-api',
+      '@aws-cdk/cloud-assembly-schema',
+      '@aws-cdk/region-info',
+    ];
+
+    for (const [depName, depVersion] of Object.entries(pkg.dependencies)) {
+      if (!isCdkModuleName(depName) || ignore.includes(depName)) {
+        continue;
+      }
+
+      const peerDep = pkg.peerDependencies[depName];
+      if (!peerDep) {
+        pkg.report({
+          ruleName: this.name,
+          message: `dependency ${depName} must also appear in peerDependencies`,
+          fix: () => pkg.addPeerDependency(depName, expectedVersion),
+        });
+      }
+
+      if (peerDep !== expectedVersion) {
+        pkg.report({
+          ruleName: this.name,
+          message: `peer dependency ${depName} should have the version ${expectedVersion}`,
+          fix: () => pkg.addPeerDependency(depName, expectedVersion),
+        });
+      }
+
+      if (depVersion !== expectedVersion) {
+        pkg.report({
+          ruleName: this.name,
+          message: `dependency ${depName}: dependency version must be ${expectedVersion}`,
+          fix: () => pkg.addDependency(depName, expectedVersion),
         });
       }
     }
@@ -647,6 +1049,15 @@ export class MustIgnoreSNK extends ValidationRule {
   public validate(pkg: PackageJson): void {
     fileShouldContain(this.name, pkg, '.npmignore', '*.snk');
     fileShouldContain(this.name, pkg, '.gitignore', '*.snk');
+  }
+}
+
+export class MustIgnoreJunitXml extends ValidationRule {
+  public readonly name = 'ignore/junit';
+
+  public validate(pkg: PackageJson): void {
+    fileShouldContain(this.name, pkg, '.npmignore', 'junit.xml');
+    fileShouldContain(this.name, pkg, '.gitignore', 'junit.xml');
   }
 }
 
@@ -668,36 +1079,6 @@ export class NpmIgnoreForJsiiModules extends ValidationRule {
 }
 
 /**
- * nodeunit and @types/nodeunit must appear in devDependencies if
- * the test script uses "nodeunit"
- */
-export class GlobalDevDependencies extends ValidationRule {
-  public readonly name = 'dependencies/global-dev';
-
-  public validate(pkg: PackageJson): void {
-
-    const deps = [
-      'typescript',
-      'tslint',
-      'nodeunit',
-      '@types/nodeunit',
-      '@types/node',
-      'nyc'
-    ];
-
-    for (const dep of deps) {
-      if (pkg.getDevDependency(dep)) {
-        pkg.report({
-          ruleName: this.name,
-          message: `devDependency ${dep} is defined at the repo level`,
-          fix: () => pkg.removeDevDependency(dep)
-        });
-      }
-    }
-  }
-}
-
-/**
  * Must use 'cdk-watch' command
  */
 export class MustUseCDKWatch extends ValidationRule {
@@ -707,6 +1088,19 @@ export class MustUseCDKWatch extends ValidationRule {
     if (!shouldUseCDKBuildTools(pkg)) { return; }
 
     expectJSON(this.name, pkg, 'scripts.watch', 'cdk-watch');
+  }
+}
+
+/**
+ * Must have 'rosetta:extract' command if this package is JSII-enabled.
+ */
+export class MustHaveRosettaExtract extends ValidationRule {
+  public readonly name = 'package-info/scripts/rosetta:extract';
+
+  public validate(pkg: PackageJson): void {
+    if (!isJSII(pkg)) { return; }
+
+    expectJSON(this.name, pkg, 'scripts.rosetta:extract', 'yarn --silent jsii-rosetta extract');
   }
 }
 
@@ -726,7 +1120,7 @@ export class MustUseCDKTest extends ValidationRule {
     // files in .gitignore.
     fileShouldContain(this.name, pkg, '.gitignore', '.nyc_output');
     fileShouldContain(this.name, pkg, '.gitignore', 'coverage');
-    fileShouldContain(this.name, pkg, '.gitignore', '.nycrc');
+    fileShouldContain(this.name, pkg, '.gitignore', 'nyc.config.js');
   }
 }
 
@@ -737,7 +1131,7 @@ export class MustHaveNodeEnginesDeclaration extends ValidationRule {
   public readonly name = 'package-info/engines';
 
   public validate(pkg: PackageJson): void {
-    expectJSON(this.name, pkg, 'engines.node', '>= 8.10.0');
+    expectJSON(this.name, pkg, 'engines.node', '>= 10.13.0 <13 || >=13.7.0');
   }
 }
 
@@ -753,7 +1147,23 @@ export class MustHaveIntegCommand extends ValidationRule {
     if (!hasIntegTests(pkg)) { return; }
 
     expectJSON(this.name, pkg, 'scripts.integ', 'cdk-integ');
-    expectDevDependency(this.name, pkg, 'cdk-integ-tools', '^' + monoRepoVersion());
+    expectDevDependency(this.name,
+      pkg,
+      'cdk-integ-tools',
+      `${require('../../cdk-integ-tools/package.json').version}`); // eslint-disable-line @typescript-eslint/no-require-imports
+  }
+}
+
+/**
+ * Checks API backwards compatibility against the latest released version.
+ */
+export class CompatScript extends ValidationRule {
+  public readonly name = 'package-info/scripts/compat';
+
+  public validate(pkg: PackageJson): void {
+    if (!isJSII(pkg)) { return ; }
+
+    expectJSON(this.name, pkg, 'scripts.compat', 'cdk-compat');
   }
 }
 
@@ -763,13 +1173,13 @@ export class PkgLintAsScript extends ValidationRule {
   public validate(pkg: PackageJson): void {
     const script = 'pkglint -f';
 
-    expectDevDependency(this.name, pkg, 'pkglint', '^' + monoRepoVersion());
+    expectDevDependency(this.name, pkg, 'pkglint', `${require('../package.json').version}`); // eslint-disable-line @typescript-eslint/no-require-imports
 
     if (!pkg.npmScript('pkglint')) {
       pkg.report({
         ruleName: this.name,
         message: 'a script called "pkglint" must be included to allow fixing package linting issues',
-        fix: () => pkg.changeNpmScript('pkglint', () => script)
+        fix: () => pkg.changeNpmScript('pkglint', () => script),
       });
     }
 
@@ -777,7 +1187,7 @@ export class PkgLintAsScript extends ValidationRule {
       pkg.report({
         ruleName: this.name,
         message: 'the pkglint script should be: ' + script,
-        fix: () => pkg.changeNpmScript('pkglint', () => script)
+        fix: () => pkg.changeNpmScript('pkglint', () => script),
       });
     }
   }
@@ -796,7 +1206,7 @@ export class NoStarDeps extends ValidationRule {
         if (deps[d] === '*') {
           pkg.report({
             ruleName,
-            message: `star dependency not allowed for ${d}`
+            message: `star dependency not allowed for ${d}`,
           });
         }
       });
@@ -821,7 +1231,7 @@ export class AllVersionsTheSame extends ValidationRule {
   private readonly usedDeps: {[pkg: string]: VersionCount[]} = {};
 
   public prepare(pkg: PackageJson): void {
-    this.ourPackages[pkg.json.name] = "^" + pkg.json.version;
+    this.ourPackages[pkg.json.name] = pkg.json.version;
     this.recordDeps(pkg.json.dependencies);
     this.recordDeps(pkg.json.devDependencies);
   }
@@ -901,42 +1311,11 @@ export class Cfn2Ts extends ValidationRule {
   public readonly name = 'cfn2ts';
 
   public validate(pkg: PackageJson) {
-    if (!isJSII(pkg)) {
-      return;
-    }
-
-    if (!isAWS(pkg)) {
-      return;
+    if (!isJSII(pkg) || !isAWS(pkg)) {
+      return expectJSON(this.name, pkg, 'scripts.cfn2ts', undefined);
     }
 
     expectJSON(this.name, pkg, 'scripts.cfn2ts', 'cfn2ts');
-  }
-}
-
-export class JestCoverageTarget extends ValidationRule {
-  public readonly name = 'jest-coverage-target';
-
-  public validate(pkg: PackageJson) {
-    if (pkg.json.jest) {
-      // We enforce the key exists, but the value is just a default
-      const defaults: { [key: string]: number } = {
-        branches: 80,
-        statements: 80
-      };
-      for (const key of Object.keys(defaults)) {
-        const deepPath = ['coverageThreshold', 'global', key];
-        const setting = deepGet(pkg.json.jest, deepPath);
-        if (setting == null) {
-          pkg.report({
-            ruleName: this.name,
-            message: `When jest is used, jest.coverageThreshold.global.${key} must be set`,
-            fix: () => {
-              deepSet(pkg.json.jest, deepPath, defaults[key]);
-            },
-          });
-        }
-      }
-    }
   }
 }
 
@@ -960,7 +1339,7 @@ export class PackageInJsiiPackageNoRuntimeDeps extends ValidationRule {
       if (Object.keys(innerPkg.dependencies).length > 0) {
         pkg.report({
           ruleName: `${this.name}:1`,
-          message: `NPM Package '${innerPkg.packageName}' inside jsii package can only have devDepencencies`
+          message: `NPM Package '${innerPkg.packageName}' inside jsii package can only have devDependencies`,
         });
       }
 
@@ -983,11 +1362,258 @@ export class FastFailingBuildScripts extends ValidationRule {
     const hasTest = 'test' in scripts;
     const hasPack = 'package' in scripts;
 
-    const cmdBuild = 'npm run build';
-    expectJSON(this.name, pkg, 'scripts.build+test', hasTest ? [cmdBuild, 'npm test'].join(' && ') : cmdBuild);
+    const cmdBuild = 'yarn build';
+    expectJSON(this.name, pkg, 'scripts.build+test', hasTest ? [cmdBuild, 'yarn test'].join(' && ') : cmdBuild);
 
-    const cmdBuildTest = 'npm run build+test';
-    expectJSON(this.name, pkg, 'scripts.build+test+package', hasPack ? [cmdBuildTest, 'npm run package'].join(' && ') : cmdBuildTest);
+    const cmdBuildTest = 'yarn build+test';
+    expectJSON(this.name, pkg, 'scripts.build+test+package', hasPack ? [cmdBuildTest, 'yarn package'].join(' && ') : cmdBuildTest);
+  }
+}
+
+export class YarnNohoistBundledDependencies extends ValidationRule {
+  public readonly name = 'yarn/nohoist-bundled-dependencies';
+
+  public validate(pkg: PackageJson) {
+    const bundled: string[] = pkg.json.bundleDependencies || pkg.json.bundledDependencies || [];
+    if (bundled.length === 0) { return; }
+
+    const repoPackageJson = path.resolve(__dirname, '../../../package.json');
+
+    const nohoist: string[] = require(repoPackageJson).workspaces.nohoist; // eslint-disable-line @typescript-eslint/no-require-imports
+
+    const missing = new Array<string>();
+    for (const dep of bundled) {
+      for (const entry of [`${pkg.packageName}/${dep}`, `${pkg.packageName}/${dep}/**`]) {
+        if (nohoist.indexOf(entry) >= 0) { continue; }
+        missing.push(entry);
+      }
+    }
+
+    if (missing.length > 0) {
+      pkg.report({
+        ruleName: this.name,
+        message: `Repository-level 'workspaces.nohoist' directive is missing: ${missing.join(', ')}`,
+        fix: () => {
+          const packageJson = require(repoPackageJson); // eslint-disable-line @typescript-eslint/no-require-imports
+          packageJson.workspaces.nohoist = [...packageJson.workspaces.nohoist, ...missing].sort();
+          fs.writeFileSync(repoPackageJson, `${JSON.stringify(packageJson, null, 2)}\n`, { encoding: 'utf8' });
+        },
+      });
+    }
+  }
+}
+
+export class ConstructsDependency extends ValidationRule {
+  public readonly name = 'constructs/dependency';
+
+  public validate(pkg: PackageJson) {
+    const REQUIRED_VERSION = ConstructsVersion.VERSION;;
+
+    if (pkg.devDependencies?.constructs && pkg.devDependencies?.constructs !== REQUIRED_VERSION) {
+      pkg.report({
+        ruleName: this.name,
+        message: `"constructs" must have a version requirement ${REQUIRED_VERSION}`,
+        fix: () => {
+          pkg.addDevDependency('constructs', REQUIRED_VERSION);
+        },
+      });
+    }
+
+    if (pkg.dependencies.constructs && pkg.dependencies.constructs !== REQUIRED_VERSION) {
+      pkg.report({
+        ruleName: this.name,
+        message: `"constructs" must have a version requirement ${REQUIRED_VERSION}`,
+        fix: () => {
+          pkg.addDependency('constructs', REQUIRED_VERSION);
+        },
+      });
+
+      if (!pkg.peerDependencies.constructs || pkg.peerDependencies.constructs !== REQUIRED_VERSION) {
+        pkg.report({
+          ruleName: this.name,
+          message: `"constructs" must have a version requirement ${REQUIRED_VERSION} in peerDependencies`,
+          fix: () => {
+            pkg.addPeerDependency('constructs', REQUIRED_VERSION);
+          },
+        });
+      }
+    }
+  }
+}
+
+/**
+ * Packages must depend on 'assert-internal', not on '@aws-cdk/assert'
+ */
+export class AssertDependency extends ValidationRule {
+  public readonly name = 'assert/assert-dependency';
+
+  public validate(pkg: PackageJson) {
+    const devDeps = pkg.json.devDependencies ?? {};
+
+    if ('@aws-cdk/assert' in devDeps) {
+      pkg.report({
+        ruleName: this.name,
+        message: 'Package should depend on \'@aws-cdk/assert-internal\', not on \'@aws-cdk/assert\'',
+        fix: () => {
+          pkg.json.devDependencies['@aws-cdk/assert-internal'] = pkg.json.devDependencies['@aws-cdk/assert'];
+          delete pkg.json.devDependencies['@aws-cdk/assert'];
+        },
+      });
+    }
+  }
+}
+
+/**
+ * Do not announce new versions of AWS CDK modules in awscdk.io because it is very very spammy
+ * and actually causes the @awscdkio twitter account to be blocked.
+ *
+ * https://github.com/construct-catalog/catalog/issues/24
+ * https://github.com/construct-catalog/catalog/pull/22
+ */
+export class DoNotAnnounceInCatalog extends ValidationRule {
+  public readonly name = 'catalog/no-announce';
+
+  public validate(pkg: PackageJson) {
+    if (!isJSII(pkg)) { return; }
+
+    if (pkg.json.awscdkio?.announce !== false) {
+      pkg.report({
+        ruleName: this.name,
+        message: 'missing "awscdkio.announce: false" in package.json',
+        fix: () => {
+          pkg.json.awscdkio = pkg.json.awscdkio ?? { };
+          pkg.json.awscdkio.announce = false;
+        },
+      });
+    }
+  }
+}
+
+export class EslintSetup extends ValidationRule {
+  public readonly name = 'package-info/eslint';
+
+  public validate(pkg: PackageJson) {
+    const eslintrcFilename = '.eslintrc.js';
+    if (!fs.existsSync(eslintrcFilename)) {
+      pkg.report({
+        ruleName: this.name,
+        message: 'There must be a .eslintrc.js file at the root of the package',
+        fix: () => {
+          const rootRelative = path.relative(pkg.packageRoot, repoRoot(pkg.packageRoot));
+          fs.writeFileSync(
+            eslintrcFilename,
+            [
+              `const baseConfig = require('${rootRelative}/tools/cdk-build-tools/config/eslintrc');`,
+              "baseConfig.parserOptions.project = __dirname + '/tsconfig.json';",
+              'module.exports = baseConfig;',
+            ].join('\n') + '\n',
+          );
+        },
+      });
+    }
+    fileShouldContain(this.name, pkg, '.gitignore', '!.eslintrc.js');
+    fileShouldContain(this.name, pkg, '.npmignore', '.eslintrc.js');
+  }
+}
+
+export class JestSetup extends ValidationRule {
+  public readonly name = 'package-info/jest.config';
+
+  public validate(pkg: PackageJson): void {
+    const cdkBuild = pkg.json['cdk-build'] || {};
+
+    // check whether the package.json contains the "jest" key,
+    // which we no longer use
+    if (pkg.json.jest) {
+      pkg.report({
+        ruleName: this.name,
+        message: 'Using Jest is set through a flag in the "cdk-build" key in package.json, the "jest" key is ignored',
+        fix: () => {
+          delete pkg.json.jest;
+          cdkBuild.jest = true;
+          pkg.json['cdk-build'] = cdkBuild;
+        },
+      });
+    }
+
+    // this rule should only be enforced for packages that use Jest for testing
+    if (!cdkBuild.jest) {
+      return;
+    }
+
+    const jestConfigFilename = 'jest.config.js';
+    if (!fs.existsSync(jestConfigFilename)) {
+      pkg.report({
+        ruleName: this.name,
+        message: 'There must be a jest.config.js file at the root of the package',
+        fix: () => {
+          const rootRelative = path.relative(pkg.packageRoot, repoRoot(pkg.packageRoot));
+          fs.writeFileSync(
+            jestConfigFilename,
+            [
+              `const baseConfig = require('${rootRelative}/tools/cdk-build-tools/config/jest.config');`,
+              'module.exports = baseConfig;',
+            ].join('\n') + '\n',
+          );
+        },
+      });
+    }
+    fileShouldContain(this.name, pkg, '.gitignore', '!jest.config.js');
+    fileShouldContain(this.name, pkg, '.npmignore', 'jest.config.js');
+  }
+}
+
+export class UbergenPackageVisibility extends ValidationRule {
+  public readonly name = 'ubergen/package-visibility';
+
+  // These include dependencies of the CDK CLI (aws-cdk).
+  private readonly publicPackages = [
+    '@aws-cdk/cfnspec',
+    '@aws-cdk/cloud-assembly-schema',
+    '@aws-cdk/cloudformation-diff',
+    '@aws-cdk/cx-api',
+    '@aws-cdk/region-info',
+    'aws-cdk-lib',
+    'aws-cdk',
+    'awslint',
+    'cdk',
+    'cdk-assets',
+  ];
+
+  public validate(pkg: PackageJson): void {
+    if (cdkMajorVersion() === 2) {
+      // Only packages in the publicPackages list should be "public". Everything else should be private.
+      if (this.publicPackages.includes(pkg.json.name) && pkg.json.private === true) {
+        pkg.report({
+          ruleName: this.name,
+          message: 'Package must be public',
+          fix: () => {
+            delete pkg.json.private;
+          },
+        });
+      } else if (!this.publicPackages.includes(pkg.json.name) && pkg.json.private !== true) {
+        pkg.report({
+          ruleName: this.name,
+          message: 'Package must not be public',
+          fix: () => {
+            delete pkg.json.private;
+            pkg.json.private = true;
+          },
+        });
+      }
+    } else {
+      if (pkg.json.private && !pkg.json.ubergen?.exclude) {
+        pkg.report({
+          ruleName: this.name,
+          message: 'ubergen.exclude must be configured for private packages',
+          fix: () => {
+            pkg.json.ubergen = {
+              exclude: true,
+            };
+          },
+        });
+      }
+    }
   }
 }
 
@@ -1005,7 +1631,7 @@ function isJSII(pkg: PackageJson): boolean {
  * @param pkg
  */
 function isAWS(pkg: PackageJson): boolean {
-  return pkg.json['cdk-build'] && pkg.json['cdk-build'].cloudformation;
+  return pkg.json['cdk-build']?.cloudformation != null;
 }
 
 /**
@@ -1033,7 +1659,34 @@ function hasIntegTests(pkg: PackageJson) {
  * Return whether this package should use CDK build tools
  */
 function shouldUseCDKBuildTools(pkg: PackageJson) {
-  // The packages that DON'T use CDKBuildTools are the package itself
-  // and the packages used by it.
-  return pkg.packageName !== 'cdk-build-tools' && pkg.packageName !== 'merkle-build';
+  const exclude = [
+    'cdk-build-tools',
+    'merkle-build',
+    'awslint',
+    'script-tests',
+  ];
+
+  return !exclude.includes(pkg.packageName);
+}
+
+function repoRoot(dir: string) {
+  let root = dir;
+  for (let i = 0; i < 50 && !fs.existsSync(path.join(root, 'yarn.lock')); i++) {
+    root = path.dirname(root);
+  }
+  return root;
+}
+
+function toRegExp(str: string): RegExp {
+  return new RegExp(str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\w+/g, '\\w+'));
+}
+
+function readBannerFile(file: string): string {
+  return fs.readFileSync(path.join(__dirname, 'banners', file), { encoding: 'utf-8' }).trim();
+}
+
+function cdkMajorVersion() {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const releaseJson = require(`${__dirname}/../../../release.json`);
+  return releaseJson.majorVersion as number;
 }

@@ -1,8 +1,17 @@
-import { Construct, Duration, IResource, Resource, Token } from '@aws-cdk/core';
+import * as path from 'path';
+import * as iam from '@aws-cdk/aws-iam';
+import { CustomResource, CustomResourceProvider, CustomResourceProviderRuntime, Duration, IResource, Resource, Token } from '@aws-cdk/core';
+import { Construct } from 'constructs';
 import { IAliasRecordTarget } from './alias-record-target';
 import { IHostedZone } from './hosted-zone-ref';
 import { CfnRecordSet } from './route53.generated';
 import { determineFullyQualifiedDomainName } from './util';
+
+const CROSS_ACCOUNT_ZONE_DELEGATION_RESOURCE_TYPE = 'Custom::CrossAccountZoneDelegation';
+
+// v2 - keep this import as a separate section to reduce merge conflict when forward merging with the v2 branch.
+// eslint-disable-next-line
+import { Construct as CoreConstruct } from '@aws-cdk/core';
 
 /**
  * A record set
@@ -18,17 +27,98 @@ export interface IRecordSet extends IResource {
  * The record type.
  */
 export enum RecordType {
+  /**
+   * route traffic to a resource, such as a web server, using an IPv4 address in dotted decimal
+   * notation
+   *
+   * @see https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/ResourceRecordTypes.html#AFormat
+   */
   A = 'A',
+
+  /**
+   * route traffic to a resource, such as a web server, using an IPv6 address in colon-separated
+   * hexadecimal format
+   *
+   * @see https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/ResourceRecordTypes.html#AAAAFormat
+   */
   AAAA = 'AAAA',
+
+  /**
+   * A CAA record specifies which certificate authorities (CAs) are allowed to issue certificates
+   * for a domain or subdomain
+   *
+   * @see https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/ResourceRecordTypes.html#CAAFormat
+   */
   CAA = 'CAA',
+
+  /**
+   * A CNAME record maps DNS queries for the name of the current record, such as acme.example.com,
+   * to another domain (example.com or example.net) or subdomain (acme.example.com or zenith.example.org).
+   *
+   * @see https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/ResourceRecordTypes.html#CNAMEFormat
+   */
   CNAME = 'CNAME',
+
+  /**
+   * An MX record specifies the names of your mail servers and, if you have two or more mail servers,
+   * the priority order.
+   *
+   * @see https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/ResourceRecordTypes.html#MXFormat
+   */
   MX = 'MX',
+
+  /**
+   * A Name Authority Pointer (NAPTR) is a type of record that is used by Dynamic Delegation Discovery
+   * System (DDDS) applications to convert one value to another or to replace one value with another.
+   * For example, one common use is to convert phone numbers into SIP URIs.
+   *
+   * @see https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/ResourceRecordTypes.html#NAPTRFormat
+   */
   NAPTR = 'NAPTR',
+
+  /**
+   * An NS record identifies the name servers for the hosted zone
+   *
+   * @see https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/ResourceRecordTypes.html#NSFormat
+   */
   NS = 'NS',
+
+  /**
+   * A PTR record maps an IP address to the corresponding domain name.
+   *
+   * @see https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/ResourceRecordTypes.html#PTRFormat
+   */
   PTR = 'PTR',
+
+  /**
+   * A start of authority (SOA) record provides information about a domain and the corresponding Amazon
+   * Route 53 hosted zone
+   *
+   * @see https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/ResourceRecordTypes.html#SOAFormat
+   */
   SOA = 'SOA',
+
+  /**
+   * SPF records were formerly used to verify the identity of the sender of email messages.
+   * Instead of an SPF record, we recommend that you create a TXT record that contains the applicable value.
+   *
+   * @see https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/ResourceRecordTypes.html#SPFFormat
+   */
   SPF = 'SPF',
+
+  /**
+   * An SRV record Value element consists of four space-separated values. The first three values are
+   * decimal numbers representing priority, weight, and port. The fourth value is a domain name.
+   *
+   * @see https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/ResourceRecordTypes.html#SRVFormat
+   */
   SRV = 'SRV',
+
+  /**
+   * A TXT record contains one or more strings that are enclosed in double quotation marks (").
+   *
+   * @see https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/ResourceRecordTypes.html#TXTFormat
+   */
   TXT = 'TXT'
 }
 
@@ -82,12 +172,17 @@ export class RecordTarget {
   }
 
   /**
-   * Use ip adresses as target.
+   * Use ip addresses as target.
    */
   public static fromIpAddresses(...ipAddresses: string[]) {
     return RecordTarget.fromValues(...ipAddresses);
   }
 
+  /**
+   *
+   * @param values correspond with the chosen record type (e.g. for 'A' Type, specify one or more IP addresses)
+   * @param aliasTarget alias for targets such as CloudFront distribution to route traffic to
+   */
   protected constructor(public readonly values?: string[], public readonly aliasTarget?: IAliasRecordTarget) {
   }
 }
@@ -126,7 +221,7 @@ export class RecordSet extends Resource implements IRecordSet {
       resourceRecords: props.target.values,
       aliasTarget: props.target.aliasTarget && props.target.aliasTarget.bind(this),
       ttl,
-      comment: props.comment
+      comment: props.comment,
     });
 
     this.domainName = recordSet.ref;
@@ -134,6 +229,8 @@ export class RecordSet extends Resource implements IRecordSet {
 }
 
 /**
+ * Target for a DNS A Record
+ *
  * @deprecated Use RecordTarget
  */
 export class AddressRecordTarget extends RecordTarget {
@@ -171,7 +268,7 @@ export interface AaaaRecordProps extends RecordSetOptions {
   /**
    * The target.
    */
-  readonly target: AddressRecordTarget;
+  readonly target: RecordTarget;
 }
 
 /**
@@ -209,7 +306,7 @@ export class CnameRecord extends RecordSet {
     super(scope, id, {
       ...props,
       recordType: RecordType.CNAME,
-      target: RecordTarget.fromValues(props.domainName)
+      target: RecordTarget.fromValues(props.domainName),
     });
   }
 }
@@ -234,9 +331,29 @@ export class TxtRecord extends RecordSet {
     super(scope, id, {
       ...props,
       recordType: RecordType.TXT,
-      target: RecordTarget.fromValues(...props.values.map(v => JSON.stringify(v))),
+      target: RecordTarget.fromValues(...props.values.map(v => formatTxt(v))),
     });
   }
+}
+
+/**
+ * Formats a text value for use in a TXT record
+ *
+ * Use `JSON.stringify` to correctly escape and enclose in double quotes ("").
+ *
+ * DNS TXT records can contain up to 255 characters in a single string. TXT
+ * record strings over 255 characters must be split into multiple text strings
+ * within the same record.
+ *
+ * @see https://aws.amazon.com/premiumsupport/knowledge-center/route53-resolve-dkim-text-record-error/
+ */
+function formatTxt(string: string): string {
+  const result = [];
+  let idx = 0;
+  while (idx < string.length) {
+    result.push(string.slice(idx, idx += 255)); // chunks of 255 characters long
+  }
+  return result.map(r => JSON.stringify(r)).join('');
 }
 
 /**
@@ -377,10 +494,9 @@ export class CaaAmazonRecord extends CaaRecord {
         {
           flag: 0,
           tag: CaaTag.ISSUE,
-          value: 'amazon.com'
-        }
+          value: 'amazon.com',
+        },
       ],
-      recordName: props.zone.zoneName
     });
   }
 }
@@ -420,7 +536,32 @@ export class MxRecord extends RecordSet {
     super(scope, id, {
       ...props,
       recordType: RecordType.MX,
-      target: RecordTarget.fromValues(...props.values.map(v => `${v.priority} ${v.hostName}`))
+      target: RecordTarget.fromValues(...props.values.map(v => `${v.priority} ${v.hostName}`)),
+    });
+  }
+}
+
+/**
+ * Construction properties for a NSRecord.
+ */
+export interface NsRecordProps extends RecordSetOptions {
+  /**
+   * The NS values.
+   */
+  readonly values: string[];
+}
+
+/**
+ * A DNS NS record
+ *
+ * @resource AWS::Route53::RecordSet
+ */
+export class NsRecord extends RecordSet {
+  constructor(scope: Construct, id: string, props: NsRecordProps) {
+    super(scope, id, {
+      ...props,
+      recordType: RecordType.NS,
+      target: RecordTarget.fromValues(...props.values),
     });
   }
 }
@@ -445,9 +586,63 @@ export class ZoneDelegationRecord extends RecordSet {
       recordType: RecordType.NS,
       target: RecordTarget.fromValues(...Token.isUnresolved(props.nameServers)
         ? props.nameServers // Can't map a string-array token!
-        : props.nameServers.map(ns => (Token.isUnresolved(ns) || ns.endsWith('.')) ? ns : `${ns}.`)
+        : props.nameServers.map(ns => (Token.isUnresolved(ns) || ns.endsWith('.')) ? ns : `${ns}.`),
       ),
-      ttl: props.ttl || Duration.days(2)
+      ttl: props.ttl || Duration.days(2),
+    });
+  }
+}
+
+/**
+ * Construction properties for a CrossAccountZoneDelegationRecord
+ */
+export interface CrossAccountZoneDelegationRecordProps {
+  /**
+   * The zone to be delegated
+   */
+  readonly delegatedZone: IHostedZone;
+
+  /**
+   * The hosted zone id in the parent account
+   */
+  readonly parentHostedZoneId: string;
+
+  /**
+   * The delegation role in the parent account
+   */
+  readonly delegationRole: iam.IRole;
+
+  /**
+   * The resource record cache time to live (TTL).
+   *
+   * @default Duration.days(2)
+   */
+  readonly ttl?: Duration;
+}
+
+/**
+ * A Cross Account Zone Delegation record
+ */
+export class CrossAccountZoneDelegationRecord extends CoreConstruct {
+  constructor(scope: Construct, id: string, props: CrossAccountZoneDelegationRecordProps) {
+    super(scope, id);
+
+    const serviceToken = CustomResourceProvider.getOrCreate(this, CROSS_ACCOUNT_ZONE_DELEGATION_RESOURCE_TYPE, {
+      codeDirectory: path.join(__dirname, 'cross-account-zone-delegation-handler'),
+      runtime: CustomResourceProviderRuntime.NODEJS_12_X,
+      policyStatements: [{ Effect: 'Allow', Action: 'sts:AssumeRole', Resource: props.delegationRole.roleArn }],
+    });
+
+    new CustomResource(this, 'CrossAccountZoneDelegationCustomResource', {
+      resourceType: CROSS_ACCOUNT_ZONE_DELEGATION_RESOURCE_TYPE,
+      serviceToken,
+      properties: {
+        AssumeRoleArn: props.delegationRole.roleArn,
+        ParentZoneId: props.parentHostedZoneId,
+        DelegatedZoneName: props.delegatedZone.zoneName,
+        DelegatedZoneNameServers: props.delegatedZone.hostedZoneNameServers!,
+        TTL: (props.ttl || Duration.days(2)).toSeconds(),
+      },
     });
   }
 }

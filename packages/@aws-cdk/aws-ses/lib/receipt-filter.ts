@@ -1,5 +1,10 @@
-import { Construct, Resource } from '@aws-cdk/core';
+import { Resource } from '@aws-cdk/core';
+import { Construct } from 'constructs';
 import { CfnReceiptFilter } from './ses.generated';
+
+// v2 - keep this import as a separate section to reduce merge conflict when forward merging with the v2 branch.
+// eslint-disable-next-line
+import { Construct as CoreConstruct } from '@aws-cdk/core'
 
 /**
  * The policy for the receipt filter.
@@ -59,7 +64,7 @@ export class ReceiptFilter extends Resource {
           policy: props.policy || ReceiptFilterPolicy.BLOCK,
         },
         name: this.physicalName,
-      }
+      },
     });
   }
 }
@@ -77,7 +82,7 @@ export interface WhiteListReceiptFilterProps {
 /**
  * A white list receipt filter.
  */
-export class WhiteListReceiptFilter extends Construct {
+export class WhiteListReceiptFilter extends CoreConstruct {
   constructor(scope: Construct, id: string, props: WhiteListReceiptFilterProps) {
     super(scope, id);
 
@@ -86,7 +91,7 @@ export class WhiteListReceiptFilter extends Construct {
     props.ips.forEach(ip => {
       new ReceiptFilter(this, `Allow${ip.replace(/[^\d]/g, '')}`, {
         ip,
-        policy: ReceiptFilterPolicy.ALLOW
+        policy: ReceiptFilterPolicy.ALLOW,
       });
     });
   }

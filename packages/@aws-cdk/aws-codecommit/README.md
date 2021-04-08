@@ -1,12 +1,14 @@
-## AWS CodeCommit Construct Library
+# AWS CodeCommit Construct Library
 <!--BEGIN STABILITY BANNER-->
 
 ---
 
-![Stability: Stable](https://img.shields.io/badge/stability-Stable-success.svg?style=for-the-badge)
+![cfn-resources: Stable](https://img.shields.io/badge/cfn--resources-stable-success.svg?style=for-the-badge)
 
+![cdk-constructs: Stable](https://img.shields.io/badge/cdk--constructs-stable-success.svg?style=for-the-badge)
 
 ---
+
 <!--END STABILITY BANNER-->
 
 AWS CodeCommit is a version control service that enables you to privately store and manage Git repositories in the AWS cloud.
@@ -17,13 +19,16 @@ see the [AWS CodeCommit documentation](https://docs.aws.amazon.com/codecommit).
 To add a CodeCommit Repository to your stack:
 
 ```ts
-import codecommit = require('@aws-cdk/aws-codecommit');
+import * as codecommit from '@aws-cdk/aws-codecommit';
 
 const repo = new codecommit.Repository(this, 'Repository' ,{
     repositoryName: 'MyRepositoryName',
     description: 'Some description.', // optional property
 });
 ```
+
+Use the `repositoryCloneUrlHttp`, `repositoryCloneUrlSsh` or `repositoryCloneUrlGrc`
+property to clone your repository.
 
 To add an Amazon SNS trigger to your repository:
 

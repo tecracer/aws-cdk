@@ -1,5 +1,5 @@
-import s3 = require('@aws-cdk/aws-s3');
-import { Construct, IResource, Resource, Stack } from '@aws-cdk/core';
+import { IResource, Resource, Stack } from '@aws-cdk/core';
+import { Construct } from 'constructs';
 import { CfnDatabase } from './glue.generated';
 
 export interface IDatabase extends IResource {
@@ -37,7 +37,8 @@ export interface DatabaseProps {
   /**
    * The location of the database (for example, an HDFS path).
    *
-   * @default a bucket is created and the database is stored under s3://<bucket-name>/<database-name>
+   * @default undefined. This field is optional in AWS::Glue::Database DatabaseInput
+   * @see https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-glue-database-databaseinput.html
    */
   readonly locationUri?: string;
 }
@@ -83,27 +84,30 @@ export class Database extends Resource implements IDatabase {
   /**
    * Location URI of this database.
    */
-  public readonly locationUri: string;
+  public readonly locationUri?: string;
 
   constructor(scope: Construct, id: string, props: DatabaseProps) {
     super(scope, id, {
       physicalName: props.databaseName,
     });
 
-    if (props.locationUri) {
+    let databaseInput: CfnDatabase.DatabaseInputProperty = {
+      name: props.databaseName,
+    };
+
+    if (props.locationUri !== undefined) {
+      validateLocationUri(props.locationUri);
       this.locationUri = props.locationUri;
-    } else {
-      const bucket = new s3.Bucket(this, 'Bucket');
-      this.locationUri = `s3://${bucket.bucketName}/${props.databaseName}`;
+      databaseInput = {
+        locationUri: this.locationUri,
+        ...databaseInput,
+      };
     }
 
     this.catalogId = Stack.of(this).account;
     const resource = new CfnDatabase(this, 'Resource', {
       catalogId: this.catalogId,
-      databaseInput: {
-        name: this.physicalName,
-        locationUri: this.locationUri
-      }
+      databaseInput,
     });
 
     // see https://docs.aws.amazon.com/glue/latest/dg/glue-specifying-resource-arns.html#data-catalog-resource-arns
@@ -117,7 +121,13 @@ export class Database extends Resource implements IDatabase {
     // catalogId is implicitly the accountId, which is why we don't pass the catalogId here
     this.catalogArn = Stack.of(this).formatArn({
       service: 'glue',
-      resource: 'catalog'
+      resource: 'catalog',
     });
+  }
+}
+
+function validateLocationUri(locationUri: string): void {
+  if (locationUri.length < 1 || locationUri.length > 1024) {
+    throw new Error(`locationUri length must be (inclusively) between 1 and 1024, but was ${locationUri.length}`);
   }
 }

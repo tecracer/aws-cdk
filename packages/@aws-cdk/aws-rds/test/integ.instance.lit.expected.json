@@ -27,16 +27,16 @@
         "MapPublicIpOnLaunch": true,
         "Tags": [
           {
-            "Key": "Name",
-            "Value": "aws-cdk-rds-instance/VPC/PublicSubnet1"
-          },
-          {
             "Key": "aws-cdk:subnet-name",
             "Value": "Public"
           },
           {
             "Key": "aws-cdk:subnet-type",
             "Value": "Public"
+          },
+          {
+            "Key": "Name",
+            "Value": "aws-cdk-rds-instance/VPC/PublicSubnet1"
           }
         ]
       }
@@ -84,7 +84,13 @@
     "VPCPublicSubnet1EIP6AD938E8": {
       "Type": "AWS::EC2::EIP",
       "Properties": {
-        "Domain": "vpc"
+        "Domain": "vpc",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "aws-cdk-rds-instance/VPC/PublicSubnet1"
+          }
+        ]
       }
     },
     "VPCPublicSubnet1NATGatewayE0556630": {
@@ -118,16 +124,16 @@
         "MapPublicIpOnLaunch": true,
         "Tags": [
           {
-            "Key": "Name",
-            "Value": "aws-cdk-rds-instance/VPC/PublicSubnet2"
-          },
-          {
             "Key": "aws-cdk:subnet-name",
             "Value": "Public"
           },
           {
             "Key": "aws-cdk:subnet-type",
             "Value": "Public"
+          },
+          {
+            "Key": "Name",
+            "Value": "aws-cdk-rds-instance/VPC/PublicSubnet2"
           }
         ]
       }
@@ -175,7 +181,13 @@
     "VPCPublicSubnet2EIP4947BC00": {
       "Type": "AWS::EC2::EIP",
       "Properties": {
-        "Domain": "vpc"
+        "Domain": "vpc",
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": "aws-cdk-rds-instance/VPC/PublicSubnet2"
+          }
+        ]
       }
     },
     "VPCPublicSubnet2NATGateway3C070193": {
@@ -209,16 +221,16 @@
         "MapPublicIpOnLaunch": false,
         "Tags": [
           {
-            "Key": "Name",
-            "Value": "aws-cdk-rds-instance/VPC/PrivateSubnet1"
-          },
-          {
             "Key": "aws-cdk:subnet-name",
             "Value": "Private"
           },
           {
             "Key": "aws-cdk:subnet-type",
             "Value": "Private"
+          },
+          {
+            "Key": "Name",
+            "Value": "aws-cdk-rds-instance/VPC/PrivateSubnet1"
           }
         ]
       }
@@ -271,16 +283,16 @@
         "MapPublicIpOnLaunch": false,
         "Tags": [
           {
-            "Key": "Name",
-            "Value": "aws-cdk-rds-instance/VPC/PrivateSubnet2"
-          },
-          {
             "Key": "aws-cdk:subnet-name",
             "Value": "Private"
           },
           {
             "Key": "aws-cdk:subnet-type",
             "Value": "Private"
+          },
+          {
+            "Key": "Name",
+            "Value": "aws-cdk-rds-instance/VPC/PrivateSubnet2"
           }
         ]
       }
@@ -347,8 +359,8 @@
     "ParameterGroup5E32DECB": {
       "Type": "AWS::RDS::DBParameterGroup",
       "Properties": {
-        "Description": "Parameter group for oracle-se1-11.2",
-        "Family": "oracle-se1-11.2",
+        "Description": "Parameter group for oracle-se2-19",
+        "Family": "oracle-se2-19",
         "Parameters": {
           "open_cursors": "2500"
         }
@@ -382,11 +394,11 @@
     "OptionGroupACA43DC1": {
       "Type": "AWS::RDS::OptionGroup",
       "Properties": {
-        "EngineName": "oracle-se1",
-        "MajorEngineVersion": "11.2",
+        "EngineName": "oracle-se2",
+        "MajorEngineVersion": "19",
         "OptionConfigurations": [
           {
-            "OptionName": "XMLDB"
+            "OptionName": "LOCATOR"
           },
           {
             "OptionName": "OEM",
@@ -401,7 +413,7 @@
             ]
           }
         ],
-        "OptionGroupDescription": "Option group for oracle-se1 11.2"
+        "OptionGroupDescription": "Option group for oracle-se2 19"
       }
     },
     "InstanceSubnetGroupF2CBA54F": {
@@ -429,7 +441,6 @@
             "IpProtocol": "-1"
           }
         ],
-        "SecurityGroupIngress": [],
         "VpcId": {
           "Ref": "VPCB9E5F0B4"
         }
@@ -461,11 +472,11 @@
         }
       }
     },
-    "InstanceSecurityGroupfromawscdkrdsinstanceInstanceRotationSecurityGroupBB71D98EIndirectPort60E4E51A": {
+    "InstanceSecurityGroupfromawscdkrdsinstanceInstanceRotationSingleUserSecurityGroupE959D912IndirectPortFF39F421": {
       "Type": "AWS::EC2::SecurityGroupIngress",
       "Properties": {
         "IpProtocol": "tcp",
-        "Description": "from awscdkrdsinstanceInstanceRotationSecurityGroupBB71D98E:{IndirectPort}",
+        "Description": "from awscdkrdsinstanceInstanceRotationSingleUserSecurityGroupE959D912:{IndirectPort}",
         "FromPort": {
           "Fn::GetAtt": [
             "InstanceC1063A87",
@@ -480,7 +491,7 @@
         },
         "SourceSecurityGroupId": {
           "Fn::GetAtt": [
-            "InstanceRotationSecurityGroupEF8D211E",
+            "InstanceRotationSingleUserSecurityGroupF3FB5C25",
             "GroupId"
           ]
         },
@@ -526,15 +537,26 @@
     "InstanceSecret478E0A47": {
       "Type": "AWS::SecretsManager::Secret",
       "Properties": {
+        "Description": {
+          "Fn::Join": [
+            "",
+            [
+              "Generated by the CDK for stack: ",
+              {
+                "Ref": "AWS::StackName"
+              }
+            ]
+          ]
+        },
         "GenerateSecretString": {
-          "ExcludeCharacters": "\"@/\\",
+          "ExcludeCharacters": " %+~`#$&*()|[]{}:;<>?!'/@\"\\",
           "GenerateStringKey": "password",
           "PasswordLength": 30,
           "SecretStringTemplate": "{\"username\":\"syscdk\"}"
         }
       }
     },
-    "InstanceSecretAttachedSecretBACA1D43": {
+    "InstanceSecretAttachment83BEE581": {
       "Type": "AWS::SecretsManager::SecretTargetAttachment",
       "Properties": {
         "SecretId": {
@@ -546,44 +568,63 @@
         "TargetType": "AWS::RDS::DBInstance"
       }
     },
-    "InstanceSecretAttachedSecretRotationSchedule275109B7": {
+    "InstanceSecretAttachmentRotationScheduleCC555119": {
       "Type": "AWS::SecretsManager::RotationSchedule",
       "Properties": {
         "SecretId": {
-          "Ref": "InstanceSecretAttachedSecretBACA1D43"
+          "Ref": "InstanceSecretAttachment83BEE581"
         },
         "RotationLambdaARN": {
-          "Fn::Join": [
-            "",
-            [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":lambda:",
-              {
-                "Ref": "AWS::Region"
-              },
-              ":",
-              {
-                "Ref": "AWS::AccountId"
-              },
-              ":function:awscdkrdsinstanceInstanceRotation0925DC60"
-            ]
+          "Fn::GetAtt": [
+            "InstanceRotationSingleUser90E8AB49",
+            "Outputs.RotationLambdaARN"
           ]
         },
         "RotationRules": {
           "AutomaticallyAfterDays": 30
         }
-      },
-      "DependsOn": [
-        "InstanceRotationPermission63844D0A"
-      ]
+      }
+    },
+    "InstanceSecretAttachmentPolicy60A8B8DE": {
+      "Type": "AWS::SecretsManager::ResourcePolicy",
+      "Properties": {
+        "ResourcePolicy": {
+          "Statement": [
+            {
+              "Action": "secretsmanager:DeleteSecret",
+              "Effect": "Deny",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":iam::",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": "*"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "SecretId": {
+          "Ref": "InstanceSecretAttachment83BEE581"
+        }
+      }
     },
     "InstanceC1063A87": {
       "Type": "AWS::RDS::DBInstance",
       "Properties": {
-        "DBInstanceClass": "db.t2.medium",
+        "DBInstanceClass": "db.t3.medium",
         "AllocatedStorage": "100",
         "AutoMinorVersionUpgrade": false,
         "BackupRetentionPeriod": 7,
@@ -595,7 +636,6 @@
         "DBSubnetGroupName": {
           "Ref": "InstanceSubnetGroupF2CBA54F"
         },
-        "DeletionProtection": true,
         "EnableCloudwatchLogsExports": [
           "trace",
           "audit",
@@ -603,7 +643,8 @@
           "listener"
         ],
         "EnablePerformanceInsights": true,
-        "Engine": "oracle-se1",
+        "Engine": "oracle-se2",
+        "EngineVersion": "19.0.0.0.ru-2020-04.rur-2020-04.r1",
         "Iops": 1000,
         "LicenseModel": "bring-your-own-license",
         "MasterUsername": {
@@ -653,8 +694,8 @@
           }
         ]
       },
-      "UpdateReplacePolicy": "Retain",
-      "DeletionPolicy": "Retain"
+      "UpdateReplacePolicy": "Snapshot",
+      "DeletionPolicy": "Snapshot"
     },
     "InstanceLogRetentiontrace487771C8": {
       "Type": "Custom::LogRetention",
@@ -752,10 +793,10 @@
         "RetentionInDays": 30
       }
     },
-    "InstanceRotationSecurityGroupEF8D211E": {
+    "InstanceRotationSingleUserSecurityGroupF3FB5C25": {
       "Type": "AWS::EC2::SecurityGroup",
       "Properties": {
-        "GroupDescription": "aws-cdk-rds-instance/Instance/Rotation/SecurityGroup",
+        "GroupDescription": "aws-cdk-rds-instance/Instance/RotationSingleUser/SecurityGroup",
         "SecurityGroupEgress": [
           {
             "CidrIp": "0.0.0.0/0",
@@ -763,18 +804,17 @@
             "IpProtocol": "-1"
           }
         ],
-        "SecurityGroupIngress": [],
         "VpcId": {
           "Ref": "VPCB9E5F0B4"
         }
       }
     },
-    "InstanceRotationAA37A997": {
+    "InstanceRotationSingleUser90E8AB49": {
       "Type": "AWS::Serverless::Application",
       "Properties": {
         "Location": {
           "ApplicationId": "arn:aws:serverlessrepo:us-east-1:297356227824:applications/SecretsManagerRDSOracleRotationSingleUser",
-          "SemanticVersion": "1.0.56"
+          "SemanticVersion": "1.1.60"
         },
         "Parameters": {
           "endpoint": {
@@ -792,13 +832,7 @@
               ]
             ]
           },
-          "functionName": "awscdkrdsinstanceInstanceRotation0925DC60",
-          "vpcSecurityGroupIds": {
-            "Fn::GetAtt": [
-              "InstanceRotationSecurityGroupEF8D211E",
-              "GroupId"
-            ]
-          },
+          "functionName": "awscdkrdsinstanceInstanceRotationSingleUserAFE3C214",
           "vpcSubnetIds": {
             "Fn::Join": [
               "",
@@ -812,30 +846,16 @@
                 }
               ]
             ]
-          }
+          },
+          "vpcSecurityGroupIds": {
+            "Fn::GetAtt": [
+              "InstanceRotationSingleUserSecurityGroupF3FB5C25",
+              "GroupId"
+            ]
+          },
+          "excludeCharacters": " %+~`#$&*()|[]{}:;<>?!'/@\"\\"
         }
       }
-    },
-    "InstanceRotationPermission63844D0A": {
-      "Type": "AWS::Lambda::Permission",
-      "Properties": {
-        "Action": "lambda:InvokeFunction",
-        "FunctionName": "awscdkrdsinstanceInstanceRotation0925DC60",
-        "Principal": {
-          "Fn::Join": [
-            "",
-            [
-              "secretsmanager.",
-              {
-                "Ref": "AWS::URLSuffix"
-              }
-            ]
-          ]
-        }
-      },
-      "DependsOn": [
-        "InstanceRotationAA37A997"
-      ]
     },
     "InstanceAvailabilityAD5D452C": {
       "Type": "AWS::Events::Rule",
@@ -884,9 +904,28 @@
                 "Arn"
               ]
             },
-            "Id": "awscdkrdsinstanceFunctionD515EE19"
+            "Id": "Target0"
           }
         ]
+      }
+    },
+    "InstanceAvailabilityAllowEventRuleawscdkrdsinstanceFunctionD515EE1969208105": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "Function76856677",
+            "Arn"
+          ]
+        },
+        "Principal": "events.amazonaws.com",
+        "SourceArn": {
+          "Fn::GetAtt": [
+            "InstanceAvailabilityAD5D452C",
+            "Arn"
+          ]
+        }
       }
     },
     "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB": {
@@ -898,17 +937,7 @@
               "Action": "sts:AssumeRole",
               "Effect": "Allow",
               "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "lambda.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
+                "Service": "lambda.amazonaws.com"
               }
             }
           ],
@@ -957,9 +986,11 @@
     "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aFD4BFC8A": {
       "Type": "AWS::Lambda::Function",
       "Properties": {
+        "Handler": "index.handler",
+        "Runtime": "nodejs12.x",
         "Code": {
           "S3Bucket": {
-            "Ref": "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aCodeS3BucketB81211B5"
+            "Ref": "AssetParameters884431e2bc651d2b61bd699a29dc9684b0f66911f06bd3ed0635f854bf18e147S3BucketAE1150B3"
           },
           "S3Key": {
             "Fn::Join": [
@@ -972,7 +1003,7 @@
                       "Fn::Split": [
                         "||",
                         {
-                          "Ref": "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aCodeS3VersionKey10C1B354"
+                          "Ref": "AssetParameters884431e2bc651d2b61bd699a29dc9684b0f66911f06bd3ed0635f854bf18e147S3VersionKeyC76660C1"
                         }
                       ]
                     }
@@ -985,7 +1016,7 @@
                       "Fn::Split": [
                         "||",
                         {
-                          "Ref": "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aCodeS3VersionKey10C1B354"
+                          "Ref": "AssetParameters884431e2bc651d2b61bd699a29dc9684b0f66911f06bd3ed0635f854bf18e147S3VersionKeyC76660C1"
                         }
                       ]
                     }
@@ -995,14 +1026,12 @@
             ]
           }
         },
-        "Handler": "index.handler",
         "Role": {
           "Fn::GetAtt": [
             "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRole9741ECFB",
             "Arn"
           ]
-        },
-        "Runtime": "nodejs8.10"
+        }
       },
       "DependsOn": [
         "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aServiceRoleDefaultPolicyADDA7DEB",
@@ -1014,7 +1043,6 @@
       "Properties": {
         "ComparisonOperator": "GreaterThanOrEqualToThreshold",
         "EvaluationPeriods": 1,
-        "Threshold": 90,
         "Dimensions": [
           {
             "Name": "DBInstanceIdentifier",
@@ -1026,7 +1054,8 @@
         "MetricName": "CPUUtilization",
         "Namespace": "AWS/RDS",
         "Period": 300,
-        "Statistic": "Average"
+        "Statistic": "Average",
+        "Threshold": 90
       }
     },
     "FunctionServiceRole675BB04A": {
@@ -1038,17 +1067,7 @@
               "Action": "sts:AssumeRole",
               "Effect": "Allow",
               "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "lambda.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
+                "Service": "lambda.amazonaws.com"
               }
             }
           ],
@@ -1076,51 +1095,32 @@
         "Code": {
           "ZipFile": "exports.handler = (event) => console.log(event);"
         },
-        "Handler": "index.handler",
         "Role": {
           "Fn::GetAtt": [
             "FunctionServiceRole675BB04A",
             "Arn"
           ]
         },
-        "Runtime": "nodejs8.10"
+        "Handler": "index.handler",
+        "Runtime": "nodejs10.x"
       },
       "DependsOn": [
         "FunctionServiceRole675BB04A"
       ]
-    },
-    "FunctionAllowEventRuleawscdkrdsinstanceInstanceAvailabilityCE39A6A71E819C19": {
-      "Type": "AWS::Lambda::Permission",
-      "Properties": {
-        "Action": "lambda:InvokeFunction",
-        "FunctionName": {
-          "Fn::GetAtt": [
-            "Function76856677",
-            "Arn"
-          ]
-        },
-        "Principal": "events.amazonaws.com",
-        "SourceArn": {
-          "Fn::GetAtt": [
-            "InstanceAvailabilityAD5D452C",
-            "Arn"
-          ]
-        }
-      }
     }
   },
   "Parameters": {
-    "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aCodeS3BucketB81211B5": {
+    "AssetParameters884431e2bc651d2b61bd699a29dc9684b0f66911f06bd3ed0635f854bf18e147S3BucketAE1150B3": {
       "Type": "String",
-      "Description": "S3 bucket for asset \"aws-cdk-rds-instance/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/Code\""
+      "Description": "S3 bucket for asset \"884431e2bc651d2b61bd699a29dc9684b0f66911f06bd3ed0635f854bf18e147\""
     },
-    "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aCodeS3VersionKey10C1B354": {
+    "AssetParameters884431e2bc651d2b61bd699a29dc9684b0f66911f06bd3ed0635f854bf18e147S3VersionKeyC76660C1": {
       "Type": "String",
-      "Description": "S3 key for asset version \"aws-cdk-rds-instance/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/Code\""
+      "Description": "S3 key for asset version \"884431e2bc651d2b61bd699a29dc9684b0f66911f06bd3ed0635f854bf18e147\""
     },
-    "LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8aCodeArtifactHash327647CC": {
+    "AssetParameters884431e2bc651d2b61bd699a29dc9684b0f66911f06bd3ed0635f854bf18e147ArtifactHash717FC602": {
       "Type": "String",
-      "Description":"Artifact hash for asset \"aws-cdk-rds-instance/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a/Code\""
+      "Description": "Artifact hash for asset \"884431e2bc651d2b61bd699a29dc9684b0f66911f06bd3ed0635f854bf18e147\""
     }
   }
 }

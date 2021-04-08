@@ -3,8 +3,7 @@
     "MyRepoF4F48043": {
       "Type": "AWS::CodeCommit::Repository",
       "Properties": {
-        "RepositoryName": "my-repo",
-        "Triggers": []
+        "RepositoryName": "my-repo"
       }
     },
     "MyBuildProjectRole6B7E2258": {
@@ -16,17 +15,7 @@
               "Action": "sts:AssumeRole",
               "Effect": "Allow",
               "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "codebuild.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
+                "Service": "codebuild.amazonaws.com"
               }
             }
           ],
@@ -102,7 +91,7 @@
                 "s3:GetBucket*",
                 "s3:List*",
                 "s3:DeleteObject*",
-                "s3:PutObject*",
+                "s3:PutObject",
                 "s3:Abort*"
               ],
               "Effect": "Allow",
@@ -142,6 +131,45 @@
                 "Fn::GetAtt": [
                   "PipelineArtifactsBucketEncryptionKey01D58D69",
                   "Arn"
+                ]
+              }
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:Encrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "PipelineArtifactsBucketEncryptionKey01D58D69",
+                  "Arn"
+                ]
+              }
+            },
+            {
+              "Action": "ssm:GetParameters",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":ssm:",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":parameter/param_store"
+                  ]
                 ]
               }
             },
@@ -208,6 +236,7 @@
         "Environment": {
           "ComputeType": "BUILD_GENERAL1_SMALL",
           "Image": "aws/codebuild/standard:1.0",
+          "ImagePullCredentialsType": "CODEBUILD",
           "PrivilegedMode": false,
           "Type": "LINUX_CONTAINER"
         },
@@ -219,6 +248,12 @@
         },
         "Source": {
           "Type": "CODEPIPELINE"
+        },
+        "EncryptionKey": {
+          "Fn::GetAtt": [
+            "PipelineArtifactsBucketEncryptionKey01D58D69",
+            "Arn"
+          ]
         }
       }
     },
@@ -228,20 +263,7 @@
         "KeyPolicy": {
           "Statement": [
             {
-              "Action": [
-                "kms:Create*",
-                "kms:Describe*",
-                "kms:Enable*",
-                "kms:List*",
-                "kms:Put*",
-                "kms:Update*",
-                "kms:Revoke*",
-                "kms:Disable*",
-                "kms:Get*",
-                "kms:Delete*",
-                "kms:ScheduleKeyDeletion",
-                "kms:CancelKeyDeletion"
-              ],
+              "Action": "kms:*",
               "Effect": "Allow",
               "Principal": {
                 "AWS": {
@@ -262,86 +284,13 @@
                 }
               },
               "Resource": "*"
-            },
-            {
-              "Action": [
-                "kms:Decrypt",
-                "kms:DescribeKey",
-                "kms:Encrypt",
-                "kms:ReEncrypt*",
-                "kms:GenerateDataKey*"
-              ],
-              "Effect": "Allow",
-              "Principal": {
-                "AWS": {
-                  "Fn::GetAtt": [
-                    "PipelineRoleD68726F7",
-                    "Arn"
-                  ]
-                }
-              },
-              "Resource": "*"
-            },
-            {
-              "Action": [
-                "kms:Decrypt",
-                "kms:DescribeKey",
-                "kms:Encrypt",
-                "kms:ReEncrypt*",
-                "kms:GenerateDataKey*"
-              ],
-              "Effect": "Allow",
-              "Principal": {
-                "AWS": {
-                  "Fn::GetAtt": [
-                    "PipelinesourceCodePipelineActionRoleB7E0306A",
-                    "Arn"
-                  ]
-                }
-              },
-              "Resource": "*"
-            },
-            {
-              "Action": [
-                "kms:Decrypt",
-                "kms:DescribeKey",
-                "kms:Encrypt",
-                "kms:ReEncrypt*",
-                "kms:GenerateDataKey*"
-              ],
-              "Effect": "Allow",
-              "Principal": {
-                "AWS": {
-                  "Fn::GetAtt": [
-                    "MyBuildProjectRole6B7E2258",
-                    "Arn"
-                  ]
-                }
-              },
-              "Resource": "*"
-            },
-            {
-              "Action": [
-                "kms:Decrypt",
-                "kms:DescribeKey"
-              ],
-              "Effect": "Allow",
-              "Principal": {
-                "AWS": {
-                  "Fn::GetAtt": [
-                    "MyBuildProjectRole6B7E2258",
-                    "Arn"
-                  ]
-                }
-              },
-              "Resource": "*"
             }
           ],
           "Version": "2012-10-17"
         }
       },
-      "DeletionPolicy": "Retain",
-      "UpdateReplacePolicy": "Retain"
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
     },
     "PipelineArtifactsBucket22248F97": {
       "Type": "AWS::S3::Bucket",
@@ -360,10 +309,30 @@
               }
             }
           ]
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
         }
       },
-      "DeletionPolicy": "Retain",
-      "UpdateReplacePolicy": "Retain"
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "PipelineArtifactsBucketEncryptionKeyAlias5C510EEE": {
+      "Type": "AWS::KMS::Alias",
+      "Properties": {
+        "AliasName": "alias/codepipeline-awscdkcodepipelinecodecommitcodebuildpipeline9540e1f5",
+        "TargetKeyId": {
+          "Fn::GetAtt": [
+            "PipelineArtifactsBucketEncryptionKey01D58D69",
+            "Arn"
+          ]
+        }
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
     },
     "PipelineRoleD68726F7": {
       "Type": "AWS::IAM::Role",
@@ -374,17 +343,7 @@
               "Action": "sts:AssumeRole",
               "Effect": "Allow",
               "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "codepipeline.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
+                "Service": "codepipeline.amazonaws.com"
               }
             }
           ],
@@ -403,7 +362,7 @@
                 "s3:GetBucket*",
                 "s3:List*",
                 "s3:DeleteObject*",
-                "s3:PutObject*",
+                "s3:PutObject",
                 "s3:Abort*"
               ],
               "Effect": "Allow",
@@ -516,7 +475,6 @@
                   "BranchName": "master",
                   "PollForSourceChanges": true
                 },
-                "InputArtifacts": [],
                 "Name": "source",
                 "OutputArtifacts": [
                   {
@@ -546,7 +504,8 @@
                 "Configuration": {
                   "ProjectName": {
                     "Ref": "MyBuildProject30DB9D6E"
-                  }
+                  },
+                  "EnvironmentVariables": "[{\"name\":\"TEST_ENV_VARIABLE\",\"type\":\"PLAINTEXT\",\"value\":\"test env variable value\"},{\"name\":\"PARAM_STORE_VARIABLE\",\"type\":\"PARAMETER_STORE\",\"value\":\"param_store\"}]"
                 },
                 "InputArtifacts": [
                   {
@@ -585,7 +544,6 @@
                   }
                 ],
                 "Name": "test",
-                "OutputArtifacts": [],
                 "RoleArn": {
                   "Fn::GetAtt": [
                     "PipelinebuildtestCodePipelineActionRole467D0DFA",
@@ -662,7 +620,7 @@
                 "s3:GetBucket*",
                 "s3:List*",
                 "s3:DeleteObject*",
-                "s3:PutObject*",
+                "s3:PutObject",
                 "s3:Abort*"
               ],
               "Effect": "Allow",

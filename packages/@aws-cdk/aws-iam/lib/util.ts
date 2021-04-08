@@ -1,13 +1,16 @@
-import { Lazy } from '@aws-cdk/core';
+import { captureStackTrace, DefaultTokenResolver, IPostProcessor, IResolvable, IResolveContext, Lazy, StringConcat, Token, Tokenization } from '@aws-cdk/core';
+import { IConstruct } from 'constructs';
 import { IPolicy } from './policy';
 
 const MAX_POLICY_NAME_LEN = 128;
 
 export function undefinedIfEmpty(f: () => string[]): string[] {
-  return Lazy.listValue({ produce: () => {
-    const array = f();
-    return (array && array.length > 0) ? array : undefined;
-  }});
+  return Lazy.list({
+    produce: () => {
+      const array = f();
+      return (array && array.length > 0) ? array : undefined;
+    },
+  });
 }
 
 /**
@@ -16,8 +19,25 @@ export function undefinedIfEmpty(f: () => string[]): string[] {
  * 128 characters, so we take the last 128 characters (in order to make sure the hash
  * is there).
  */
-export function generatePolicyName(logicalId: string) {
-  return logicalId.substring(Math.max(logicalId.length - MAX_POLICY_NAME_LEN, 0), logicalId.length);
+export function generatePolicyName(scope: IConstruct, logicalId: string): string {
+  // as logicalId is itself a Token, resolve it first
+  const resolvedLogicalId = Tokenization.resolve(logicalId, {
+    scope,
+    resolver: new DefaultTokenResolver(new StringConcat()),
+  });
+  return lastNCharacters(resolvedLogicalId, MAX_POLICY_NAME_LEN);
+}
+
+/**
+ * Returns a string composed of the last n characters of str.
+ * If str is shorter than n, returns str.
+ *
+ * @param str the string to return the last n characters of
+ * @param n how many characters to return
+ */
+function lastNCharacters(str: string, n: number) {
+  const startIndex = Math.max(str.length - n, 0);
+  return str.substring(startIndex, str.length);
 }
 
 /**
@@ -52,13 +72,55 @@ export function mergePrincipal(target: { [key: string]: string[] }, source: { [k
   for (const key of Object.keys(source)) {
     target[key] = target[key] || [];
 
-    const value = source[key];
+    let value = source[key];
     if (!Array.isArray(value)) {
-      throw new Error(`Principal value must be an array (it will be normalized later): ${value}`);
+      value = [value];
     }
 
     target[key].push(...value);
   }
 
   return target;
+}
+
+/**
+ * Lazy string set token that dedupes entries
+ *
+ * Needs to operate post-resolve, because the inputs could be
+ * `[ '${Token[TOKEN.9]}', '${Token[TOKEN.10]}', '${Token[TOKEN.20]}' ]`, which
+ * still all resolve to the same string value.
+ *
+ * Needs to JSON.stringify() results because strings could resolve to literal
+ * strings but could also resolve to `{ Fn::Join: [...] }`.
+ */
+export class UniqueStringSet implements IResolvable, IPostProcessor {
+  public static from(fn: () => string[]) {
+    return Token.asList(new UniqueStringSet(fn));
+  }
+
+  public readonly creationStack: string[];
+
+  private constructor(private readonly fn: () => string[]) {
+    this.creationStack = captureStackTrace();
+  }
+
+  public resolve(context: IResolveContext) {
+    context.registerPostProcessor(this);
+    return this.fn();
+  }
+
+  public postProcess(input: any, _context: IResolveContext) {
+    if (!Array.isArray(input)) { return input; }
+    if (input.length === 0) { return undefined; }
+
+    const uniq: Record<string, any> = {};
+    for (const el of input) {
+      uniq[JSON.stringify(el)] = el;
+    }
+    return Object.values(uniq);
+  }
+
+  public toString(): string {
+    return Token.asString(this);
+  }
 }

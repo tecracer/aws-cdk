@@ -1,5 +1,6 @@
-import iam = require('@aws-cdk/aws-iam');
-import { Construct, Duration, IResource, Resource } from '@aws-cdk/core';
+import * as iam from '@aws-cdk/aws-iam';
+import { Duration, IResource, Resource } from '@aws-cdk/core';
+import { Construct } from 'constructs';
 import { IAutoScalingGroup } from './auto-scaling-group';
 import { CfnLifecycleHook } from './autoscaling.generated';
 import { ILifecycleHookTarget } from './lifecycle-hook-target';
@@ -97,7 +98,7 @@ export class LifecycleHook extends Resource implements ILifecycleHook {
     });
 
     this.role = props.role || new iam.Role(this, 'Role', {
-      assumedBy: new iam.ServicePrincipal('autoscaling.amazonaws.com')
+      assumedBy: new iam.ServicePrincipal('autoscaling.amazonaws.com'),
     });
 
     const targetProps = props.notificationTarget.bind(this, this);

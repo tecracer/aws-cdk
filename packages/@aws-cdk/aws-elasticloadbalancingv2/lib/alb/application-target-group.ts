@@ -1,13 +1,21 @@
-import cloudwatch = require('@aws-cdk/aws-cloudwatch');
-import ec2 = require('@aws-cdk/aws-ec2');
-import { Construct, Duration, IConstruct } from '@aws-cdk/core';
-import { BaseTargetGroupProps, ITargetGroup, loadBalancerNameFromListenerArn, LoadBalancerTargetProps,
-         TargetGroupBase, TargetGroupImportProps } from '../shared/base-target-group';
-import { ApplicationProtocol } from '../shared/enums';
+import * as cloudwatch from '@aws-cdk/aws-cloudwatch';
+import * as ec2 from '@aws-cdk/aws-ec2';
+import { Annotations, Duration, Token } from '@aws-cdk/core';
+import { IConstruct, Construct } from 'constructs';
+import { ApplicationELBMetrics } from '../elasticloadbalancingv2-canned-metrics.generated';
+import {
+  BaseTargetGroupProps, ITargetGroup, loadBalancerNameFromListenerArn, LoadBalancerTargetProps,
+  TargetGroupAttributes, TargetGroupBase, TargetGroupImportProps,
+} from '../shared/base-target-group';
+import { ApplicationProtocol, ApplicationProtocolVersion, Protocol, TargetType } from '../shared/enums';
 import { ImportedTargetGroupBase } from '../shared/imported';
 import { determineProtocolAndPort } from '../shared/util';
 import { IApplicationListener } from './application-listener';
 import { HttpCodeTarget } from './application-load-balancer';
+
+// keep this import separate from other imports to reduce chance for merge conflicts with v2-main
+// eslint-disable-next-line no-duplicate-imports, import/order
+import { Construct as CoreConstruct } from '@aws-cdk/core';
 
 /**
  * Properties for defining an Application Target Group
@@ -16,14 +24,21 @@ export interface ApplicationTargetGroupProps extends BaseTargetGroupProps {
   /**
    * The protocol to use
    *
-   * @default - Determined from port if known.
+   * @default - Determined from port if known, optional for Lambda targets.
    */
   readonly protocol?: ApplicationProtocol;
 
   /**
+   * The protocol version to use
+   *
+   * @default ApplicationProtocolVersion.HTTP1
+   */
+  readonly protocolVersion?: ApplicationProtocolVersion;
+
+  /**
    * The port on which the listener listens for requests.
    *
-   * @default - Determined from protocol if known.
+   * @default - Determined from protocol if known, optional for Lambda targets.
    */
   readonly port?: number;
 
@@ -50,6 +65,20 @@ export interface ApplicationTargetGroupProps extends BaseTargetGroupProps {
   readonly stickinessCookieDuration?: Duration;
 
   /**
+   * The name of an application-based stickiness cookie.
+   *
+   * Names that start with the following prefixes are not allowed: AWSALB, AWSALBAPP,
+   * and AWSALBTG; they're reserved for use by the load balancer.
+   *
+   * Note: `stickinessCookieName` parameter depends on the presence of `stickinessCookieDuration` parameter.
+   * If `stickinessCookieDuration` is not set, `stickinessCookieName` will be omitted.
+   *
+   * @default - If `stickinessCookieDuration` is set, a load-balancer generated cookie is used. Otherwise, no stickiness is defined.
+   * @see https://docs.aws.amazon.com/elasticloadbalancing/latest/application/sticky-sessions.html
+   */
+  readonly stickinessCookieName?: string;
+
+  /**
    * The targets to add to this target group.
    *
    * Can be `Instance`, `IPAddress`, or any self-registering load balancing
@@ -68,32 +97,51 @@ export class ApplicationTargetGroup extends TargetGroupBase implements IApplicat
   /**
    * Import an existing target group
    */
+  public static fromTargetGroupAttributes(scope: Construct, id: string, attrs: TargetGroupAttributes): IApplicationTargetGroup {
+    return new ImportedApplicationTargetGroup(scope, id, attrs);
+  }
+
+  /**
+   * Import an existing target group
+   *
+   * @deprecated Use `fromTargetGroupAttributes` instead
+   */
   public static import(scope: Construct, id: string, props: TargetGroupImportProps): IApplicationTargetGroup {
-    return new ImportedApplicationTargetGroup(scope, id, props);
+    return ApplicationTargetGroup.fromTargetGroupAttributes(scope, id, props);
   }
 
   private readonly connectableMembers: ConnectableMember[];
   private readonly listeners: IApplicationListener[];
+  private readonly protocol?: ApplicationProtocol;
+  private readonly port?: number;
 
-  constructor(scope: Construct, id: string, props: ApplicationTargetGroupProps) {
+  constructor(scope: Construct, id: string, props: ApplicationTargetGroupProps = {}) {
     const [protocol, port] = determineProtocolAndPort(props.protocol, props.port);
-
-    super(scope, id, props, {
+    const { protocolVersion } = props;
+    super(scope, id, { ...props }, {
       protocol,
+      protocolVersion,
       port,
     });
+
+    this.protocol = protocol;
+    this.port = port;
 
     this.connectableMembers = [];
     this.listeners = [];
 
-    if (props.slowStart !== undefined) {
-      this.setAttribute('slow_start.duration_seconds', props.slowStart.toSeconds().toString());
+    if (props) {
+      if (props.slowStart !== undefined) {
+        if (props.slowStart.toSeconds() < 30 || props.slowStart.toSeconds() > 900) {
+          throw new Error('Slow start duration value must be between 30 and 900 seconds.');
+        }
+        this.setAttribute('slow_start.duration_seconds', props.slowStart.toSeconds().toString());
+      }
+      if (props.stickinessCookieDuration) {
+        this.enableCookieStickiness(props.stickinessCookieDuration, props.stickinessCookieName);
+      }
+      this.addTarget(...(props.targets || []));
     }
-    if (props.stickinessCookieDuration !== undefined) {
-      this.enableCookieStickiness(props.stickinessCookieDuration);
-    }
-
-    this.addTarget(...(props.targets || []));
   }
 
   /**
@@ -107,12 +155,34 @@ export class ApplicationTargetGroup extends TargetGroupBase implements IApplicat
   }
 
   /**
-   * Enable sticky routing via a cookie to members of this target group
+   * Enable sticky routing via a cookie to members of this target group.
+   *
+   * Note: If the `cookieName` parameter is set, application-based stickiness will be applied,
+   * otherwise it defaults to duration-based stickiness attributes (`lb_cookie`).
+   *
+   * @see https://docs.aws.amazon.com/elasticloadbalancing/latest/application/sticky-sessions.html
    */
-  public enableCookieStickiness(duration: Duration) {
+  public enableCookieStickiness(duration: Duration, cookieName?: string) {
+    if (duration.toSeconds() < 1 || duration.toSeconds() > 604800) {
+      throw new Error('Stickiness cookie duration value must be between 1 second and 7 days (604800 seconds).');
+    }
+    if (cookieName !== undefined) {
+      if (!Token.isUnresolved(cookieName) && (cookieName.startsWith('AWSALB') || cookieName.startsWith('AWSALBAPP') || cookieName.startsWith('AWSALBTG'))) {
+        throw new Error('App cookie names that start with the following prefixes are not allowed: AWSALB, AWSALBAPP, and AWSALBTG; they\'re reserved for use by the load balancer.');
+      }
+      if (cookieName === '') {
+        throw new Error('App cookie name cannot be an empty string.');
+      }
+    }
     this.setAttribute('stickiness.enabled', 'true');
-    this.setAttribute('stickiness.type', 'lb_cookie');
-    this.setAttribute('stickiness.lb_cookie.duration_seconds', duration.toSeconds().toString());
+    if (cookieName) {
+      this.setAttribute('stickiness.type', 'app_cookie');
+      this.setAttribute('stickiness.app_cookie.cookie_name', cookieName);
+      this.setAttribute('stickiness.app_cookie.duration_seconds', duration.toSeconds().toString());
+    } else {
+      this.setAttribute('stickiness.type', 'lb_cookie');
+      this.setAttribute('stickiness.lb_cookie.duration_seconds', duration.toSeconds().toString());
+    }
   }
 
   /**
@@ -143,7 +213,7 @@ export class ApplicationTargetGroup extends TargetGroupBase implements IApplicat
       listener.registerConnectable(member.connectable, member.portRange);
     }
     this.listeners.push(listener);
-    this.loadBalancerAttachedDependencies.add(associatingConstruct || listener);
+    this.loadBalancerAttachedDependencies.add((associatingConstruct || listener) as CoreConstruct);
   }
 
   /**
@@ -174,8 +244,8 @@ export class ApplicationTargetGroup extends TargetGroupBase implements IApplicat
         TargetGroup: this.targetGroupFullName,
         LoadBalancer: this.firstLoadBalancerFullName,
       },
-      ...props
-    });
+      ...props,
+    }).attachTo(this);
   }
 
   /**
@@ -184,10 +254,7 @@ export class ApplicationTargetGroup extends TargetGroupBase implements IApplicat
    * @default Sum over 5 minutes
    */
   public metricIpv6RequestCount(props?: cloudwatch.MetricOptions) {
-    return this.metric('IPv6RequestCount', {
-      statistic: 'Sum',
-      ...props
-    });
+    return this.cannedMetric(ApplicationELBMetrics.iPv6RequestCountSum, props);
   }
 
   /**
@@ -198,10 +265,7 @@ export class ApplicationTargetGroup extends TargetGroupBase implements IApplicat
    * @default Sum over 5 minutes
    */
   public metricRequestCount(props?: cloudwatch.MetricOptions) {
-    return this.metric('RequestCount', {
-      statistic: 'Sum',
-      ...props
-    });
+    return this.cannedMetric(ApplicationELBMetrics.requestCountSum, props);
   }
 
   /**
@@ -212,7 +276,7 @@ export class ApplicationTargetGroup extends TargetGroupBase implements IApplicat
   public metricHealthyHostCount(props?: cloudwatch.MetricOptions) {
     return this.metric('HealthyHostCount', {
       statistic: 'Average',
-      ...props
+      ...props,
     });
   }
 
@@ -222,9 +286,9 @@ export class ApplicationTargetGroup extends TargetGroupBase implements IApplicat
    * @default Average over 5 minutes
    */
   public metricUnhealthyHostCount(props?: cloudwatch.MetricOptions) {
-    return this.metric('UnhealthyHostCount', {
+    return this.metric('UnHealthyHostCount', {
       statistic: 'Average',
-      ...props
+      ...props,
     });
   }
 
@@ -238,7 +302,7 @@ export class ApplicationTargetGroup extends TargetGroupBase implements IApplicat
   public metricHttpCodeTarget(code: HttpCodeTarget, props?: cloudwatch.MetricOptions) {
     return this.metric(code, {
       statistic: 'Sum',
-      ...props
+      ...props,
     });
   }
 
@@ -252,7 +316,7 @@ export class ApplicationTargetGroup extends TargetGroupBase implements IApplicat
   public metricRequestCountPerTarget(props?: cloudwatch.MetricOptions) {
     return this.metric('RequestCountPerTarget', {
       statistic: 'Sum',
-      ...props
+      ...props,
     });
   }
 
@@ -264,7 +328,7 @@ export class ApplicationTargetGroup extends TargetGroupBase implements IApplicat
   public metricTargetConnectionErrorCount(props?: cloudwatch.MetricOptions) {
     return this.metric('TargetConnectionErrorCount', {
       statistic: 'Sum',
-      ...props
+      ...props,
     });
   }
 
@@ -276,7 +340,7 @@ export class ApplicationTargetGroup extends TargetGroupBase implements IApplicat
   public metricTargetResponseTime(props?: cloudwatch.MetricOptions) {
     return this.metric('TargetResponseTime', {
       statistic: 'Average',
-      ...props
+      ...props,
     });
   }
 
@@ -290,10 +354,39 @@ export class ApplicationTargetGroup extends TargetGroupBase implements IApplicat
   public metricTargetTLSNegotiationErrorCount(props?: cloudwatch.MetricOptions) {
     return this.metric('TargetTLSNegotiationErrorCount', {
       statistic: 'Sum',
-      ...props
+      ...props,
     });
   }
 
+  protected validate(): string[] {
+    const ret = super.validate();
+
+    if (this.targetType !== undefined && this.targetType !== TargetType.LAMBDA
+      && (this.protocol === undefined || this.port === undefined)) {
+      ret.push('At least one of \'port\' or \'protocol\' is required for a non-Lambda TargetGroup');
+    }
+
+    if (this.healthCheck && this.healthCheck.protocol && !ALB_HEALTH_CHECK_PROTOCOLS.includes(this.healthCheck.protocol)) {
+      ret.push([
+        `Health check protocol '${this.healthCheck.protocol}' is not supported. `,
+        `Must be one of [${ALB_HEALTH_CHECK_PROTOCOLS.join(', ')}]`,
+      ].join(''));
+    }
+
+    return ret;
+  }
+
+  private cannedMetric(
+    fn: (dims: { LoadBalancer: string, TargetGroup: string }) => cloudwatch.MetricProps,
+    props?: cloudwatch.MetricOptions): cloudwatch.Metric {
+    return new cloudwatch.Metric({
+      ...fn({
+        LoadBalancer: this.firstLoadBalancerFullName,
+        TargetGroup: this.targetGroupFullName,
+      }),
+      ...props,
+    }).attachTo(this);
+  }
 }
 
 /**
@@ -321,6 +414,18 @@ export interface IApplicationTargetGroup extends ITargetGroup {
    * Don't call this directly. It will be called by listeners.
    */
   registerListener(listener: IApplicationListener, associatingConstruct?: IConstruct): void;
+
+  /**
+   * Register a connectable as a member of this target group.
+   *
+   * Don't call this directly. It will be called by load balancing targets.
+   */
+  registerConnectable(connectable: ec2.IConnectable, portRange?: ec2.Port): void;
+
+  /**
+   * Add a load balancing target to this target group
+   */
+  addTarget(...targets: IApplicationLoadBalancerTarget[]): void;
 }
 
 /**
@@ -329,6 +434,21 @@ export interface IApplicationTargetGroup extends ITargetGroup {
 class ImportedApplicationTargetGroup extends ImportedTargetGroupBase implements IApplicationTargetGroup {
   public registerListener(_listener: IApplicationListener, _associatingConstruct?: IConstruct) {
     // Nothing to do, we know nothing of our members
+    Annotations.of(this).addWarning('Cannot register listener on imported target group -- security groups might need to be updated manually');
+  }
+
+  public registerConnectable(_connectable: ec2.IConnectable, _portRange?: ec2.Port | undefined): void {
+    Annotations.of(this).addWarning('Cannot register connectable on imported target group -- security groups might need to be updated manually');
+  }
+
+  public addTarget(...targets: IApplicationLoadBalancerTarget[]) {
+    for (const target of targets) {
+      const result = target.attachToApplicationTargetGroup(this);
+
+      if (result.targetJson !== undefined) {
+        throw new Error('Cannot add a non-self registering target to an imported TargetGroup. Create a new TargetGroup instead.');
+      }
+    }
   }
 }
 
@@ -342,5 +462,7 @@ export interface IApplicationLoadBalancerTarget {
    * May return JSON to directly add to the [Targets] list, or return undefined
    * if the target will register itself with the load balancer.
    */
-  attachToApplicationTargetGroup(targetGroup: ApplicationTargetGroup): LoadBalancerTargetProps;
+  attachToApplicationTargetGroup(targetGroup: IApplicationTargetGroup): LoadBalancerTargetProps;
 }
+
+const ALB_HEALTH_CHECK_PROTOCOLS = [Protocol.HTTP, Protocol.HTTPS];

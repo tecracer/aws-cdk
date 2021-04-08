@@ -1,25 +1,25 @@
-## @aws-cdk/aws-dynamodb-global
+# @aws-cdk/aws-dynamodb-global
 <!--BEGIN STABILITY BANNER-->
 
 ---
 
-![Stability: Experimental](https://img.shields.io/badge/stability-Experimental-important.svg?style=for-the-badge)
+![Deprecated](https://img.shields.io/badge/deprecated-critical.svg?style=for-the-badge)
 
-> **This is a _developer preview_ (public beta) module. Releases might lack important features and might have
-> future breaking changes.**
->
-> This API is still under active development and subject to non-backward
-> compatible changes or removal in any future version. Use of the API is not recommended in production
-> environments. Experimental APIs are not subject to the Semantic Versioning model.
+> This API may emit warnings. Backward compatibility is not guaranteed.
 
 ---
+
 <!--END STABILITY BANNER-->
+
+## NOTICE: This module has been deprecated in favor of `@aws-cdk/aws-dynamodb.Table.replicationRegions`
+
+---
 
 Global Tables builds upon DynamoDB’s global footprint to provide you with a fully managed, multi-region, and multi-master database that provides fast, local, read and write performance for massively scaled, global applications. Global Tables replicates your Amazon DynamoDB tables automatically across your choice of AWS regions.
 
 Here is a minimal deployable Global DynamoDB tables definition:
 
-```typescript
+```ts
 import { AttributeType } from '@aws-cdk/aws-dynamodb';
 import { GlobalTable } from '@aws-cdk/aws-dynamodb-global';
 import { App } from '@aws-cdk/core';
@@ -34,6 +34,7 @@ app.synth();
 ```
 
 ## Implementation Notes
+
 AWS Global DynamoDB Tables is an odd case currently.  The way this package works -
 
 * Creates a DynamoDB table in a separate stack in each `DynamoDBGlobalStackProps.region` specified

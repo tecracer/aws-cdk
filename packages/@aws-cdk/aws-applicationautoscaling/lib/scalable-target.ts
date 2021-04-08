@@ -1,5 +1,6 @@
-import iam = require('@aws-cdk/aws-iam');
-import { Construct, IResource, Resource } from '@aws-cdk/core';
+import * as iam from '@aws-cdk/aws-iam';
+import { IResource, Lazy, Resource, withResolved } from '@aws-cdk/core';
+import { Construct } from 'constructs';
 import { CfnScalableTarget } from './applicationautoscaling.generated';
 import { Schedule } from './schedule';
 import { BasicStepScalingPolicyProps, StepScalingPolicy } from './step-scaling-policy';
@@ -96,18 +97,26 @@ export class ScalableTarget extends Resource implements IScalableTarget {
   constructor(scope: Construct, id: string, props: ScalableTargetProps) {
     super(scope, id);
 
-    if (props.maxCapacity < 0) {
-      throw new RangeError(`maxCapacity cannot be negative, got: ${props.maxCapacity}`);
-    }
-    if (props.minCapacity < 0) {
-      throw new RangeError(`minCapacity cannot be negative, got: ${props.minCapacity}`);
-    }
-    if (props.maxCapacity < props.minCapacity) {
-      throw new RangeError(`minCapacity (${props.minCapacity}) should be lower than maxCapacity (${props.maxCapacity})`);
-    }
+    withResolved(props.maxCapacity, max => {
+      if (max < 0) {
+        throw new RangeError(`maxCapacity cannot be negative, got: ${props.maxCapacity}`);
+      }
+    });
+
+    withResolved(props.minCapacity, min => {
+      if (min < 0) {
+        throw new RangeError(`minCapacity cannot be negative, got: ${props.minCapacity}`);
+      }
+    });
+
+    withResolved(props.minCapacity, props.maxCapacity, (min, max) => {
+      if (max < min) {
+        throw new RangeError(`minCapacity (${props.minCapacity}) should be lower than maxCapacity (${props.maxCapacity})`);
+      }
+    });
 
     this.role = props.role || new iam.Role(this, 'Role', {
-      assumedBy: new iam.ServicePrincipal('application-autoscaling.amazonaws.com')
+      assumedBy: new iam.ServicePrincipal('application-autoscaling.amazonaws.com'),
     });
 
     const resource = new CfnScalableTarget(this, 'Resource', {
@@ -116,8 +125,8 @@ export class ScalableTarget extends Resource implements IScalableTarget {
       resourceId: props.resourceId,
       roleArn: this.role.roleArn,
       scalableDimension: props.scalableDimension,
-      scheduledActions: this.actions,
-      serviceNamespace: props.serviceNamespace
+      scheduledActions: Lazy.any({ produce: () => this.actions }, { omitEmptyArray: true }),
+      serviceNamespace: props.serviceNamespace,
     });
 
     this.scalableTargetId = resource.ref;
@@ -127,7 +136,7 @@ export class ScalableTarget extends Resource implements IScalableTarget {
    * Add a policy statement to the role's policy
    */
   public addToRolePolicy(statement: iam.PolicyStatement) {
-    this.role.addToPolicy(statement);
+    this.role.addToPrincipalPolicy(statement);
   }
 
   /**
@@ -144,7 +153,7 @@ export class ScalableTarget extends Resource implements IScalableTarget {
       endTime: action.endTime,
       scalableTargetAction: {
         maxCapacity: action.maxCapacity,
-        minCapacity: action.minCapacity
+        minCapacity: action.minCapacity,
       },
     });
   }
@@ -255,4 +264,19 @@ export enum ServiceNamespace {
    * Custom Resource
    */
   CUSTOM_RESOURCE = 'custom-resource',
+
+  /**
+   * Lambda
+   */
+  LAMBDA = 'lambda',
+
+  /**
+   * Comprehend
+   */
+  COMPREHEND = 'comprehend',
+
+  /**
+   * Kafka
+   */
+  KAFKA = 'kafka',
 }

@@ -1,5 +1,9 @@
-import codepipeline = require('@aws-cdk/aws-codepipeline');
-import events = require('@aws-cdk/aws-events');
+import * as codepipeline from '@aws-cdk/aws-codepipeline';
+import * as events from '@aws-cdk/aws-events';
+import { Lazy } from '@aws-cdk/core';
+
+// keep this import separate from other imports to reduce chance for merge conflicts with v2-main
+// eslint-disable-next-line no-duplicate-imports, import/order
 import { Construct } from '@aws-cdk/core';
 
 /**
@@ -13,19 +17,48 @@ import { Construct } from '@aws-cdk/core';
  * @experimental
  */
 export abstract class Action implements codepipeline.IAction {
+  public readonly actionProperties: codepipeline.ActionProperties;
   private _pipeline?: codepipeline.IPipeline;
   private _stage?: codepipeline.IStage;
   private _scope?: Construct;
+  private readonly customerProvidedNamespace?: string;
+  private readonly namespaceOrToken: string;
+  private actualNamespace?: string;
+  private variableReferenced = false;
 
-  constructor(public readonly actionProperties: codepipeline.ActionProperties) {
-    // nothing to do
+  protected constructor(actionProperties: codepipeline.ActionProperties) {
+    this.customerProvidedNamespace = actionProperties.variablesNamespace;
+    this.namespaceOrToken = Lazy.string({
+      produce: () => {
+      // make sure the action was bound (= added to a pipeline)
+        if (this.actualNamespace !== undefined) {
+          return this.customerProvidedNamespace !== undefined
+          // if a customer passed a namespace explicitly, always use that
+            ? this.customerProvidedNamespace
+          // otherwise, only return a namespace if any variable was referenced
+            : (this.variableReferenced ? this.actualNamespace : undefined);
+        } else {
+          throw new Error(`Cannot reference variables of action '${this.actionProperties.actionName}', ` +
+          'as that action was never added to a pipeline');
+        }
+      },
+    });
+    this.actionProperties = {
+      ...actionProperties,
+      variablesNamespace: this.namespaceOrToken,
+    };
   }
 
   public bind(scope: Construct, stage: codepipeline.IStage, options: codepipeline.ActionBindOptions):
-    codepipeline.ActionConfig {
+  codepipeline.ActionConfig {
     this._pipeline = stage.pipeline;
     this._stage = stage;
     this._scope = scope;
+
+    this.actualNamespace = this.customerProvidedNamespace === undefined
+      // default a namespace name, based on the stage and action names
+      ? `${stage.stageName}_${this.actionProperties.actionName}_NS`
+      : this.customerProvidedNamespace;
 
     return this.bound(scope, stage, options);
   }
@@ -34,15 +67,20 @@ export abstract class Action implements codepipeline.IAction {
     const rule = new events.Rule(this.scope, name, options);
     rule.addTarget(target);
     rule.addEventPattern({
-      detailType: [ 'CodePipeline Stage Execution State Change' ],
-      source: [ 'aws.codepipeline' ],
-      resources: [ this.pipeline.pipelineArn ],
+      detailType: ['CodePipeline Action Execution State Change'],
+      source: ['aws.codepipeline'],
+      resources: [this.pipeline.pipelineArn],
       detail: {
-        stage: [ this.stage.stageName ],
-        action: [ this.actionProperties.actionName ],
+        stage: [this.stage.stageName],
+        action: [this.actionProperties.actionName],
       },
     });
     return rule;
+  }
+
+  protected variableExpression(variableName: string): string {
+    this.variableReferenced = true;
+    return `#{${this.namespaceOrToken}.${variableName}}`;
   }
 
   /**
@@ -54,7 +92,7 @@ export abstract class Action implements codepipeline.IAction {
    *   to configure itself, like a reference to the Role, etc.
    */
   protected abstract bound(scope: Construct, stage: codepipeline.IStage, options: codepipeline.ActionBindOptions):
-    codepipeline.ActionConfig;
+  codepipeline.ActionConfig;
 
   private get pipeline(): codepipeline.IPipeline {
     if (this._pipeline) {

@@ -17,6 +17,13 @@ export abstract class Schedule {
    * Construct a schedule from an interval and a time unit
    */
   public static rate(duration: Duration): Schedule {
+    if (duration.isUnresolved()) {
+      const validDurationUnit = ['minute', 'minutes', 'hour', 'hours', 'day', 'days'];
+      if (!validDurationUnit.includes(duration.unitLabel())) {
+        throw new Error("Allowed units for scheduling are: 'minute', 'minutes', 'hour', 'hours', 'day' or 'days'");
+      }
+      return new LiteralSchedule(`rate(${duration.formatTokenToNumber()})`);
+    }
     if (duration.toSeconds() === 0) {
       throw new Error('Duration cannot be 0');
     }
@@ -39,7 +46,7 @@ export abstract class Schedule {
    */
   public static cron(options: CronOptions): Schedule {
     if (options.weekDay !== undefined && options.day !== undefined) {
-      throw new Error(`Cannot supply both 'day' and 'weekDay', use at most one`);
+      throw new Error('Cannot supply both \'day\' and \'weekDay\', use at most one');
     }
 
     const minute = fallback(options.minute, '*');
@@ -66,7 +73,7 @@ export abstract class Schedule {
 /**
  * Options to configure a cron expression
  *
- * All fields are strings so you can use complex expresions. Absence of
+ * All fields are strings so you can use complex expressions. Absence of
  * a field implies '*' or '?', whichever one is appropriate.
  *
  * @see https://docs.aws.amazon.com/AmazonCloudWatch/latest/events/ScheduledEvents.html#CronExpressions

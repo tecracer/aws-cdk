@@ -1,8 +1,13 @@
-import cloudwatch = require('@aws-cdk/aws-cloudwatch');
-import { Construct } from '@aws-cdk/core';
+import * as appscaling from '@aws-cdk/aws-applicationautoscaling';
+import * as cloudwatch from '@aws-cdk/aws-cloudwatch';
+import * as iam from '@aws-cdk/aws-iam';
+import { Construct } from 'constructs';
+import { EventInvokeConfigOptions } from './event-invoke-config';
 import { IFunction, QualifiedFunctionBase } from './function-base';
-import { IVersion } from './lambda-version';
+import { extractQualifierFromArn, IVersion } from './lambda-version';
 import { CfnAlias } from './lambda.generated';
+import { ScalableFunctionAttribute } from './private/scalable-function-attribute';
+import { AutoScalingOptions, IScalableFunctionAttribute } from './scalable-attribute-api';
 
 export interface IAlias extends IFunction {
   /**
@@ -19,27 +24,15 @@ export interface IAlias extends IFunction {
 }
 
 /**
- * Properties for a new Lambda alias
+ * Options for `lambda.Alias`.
  */
-export interface AliasProps {
+export interface AliasOptions extends EventInvokeConfigOptions {
   /**
    * Description for the alias
    *
    * @default No description
    */
   readonly description?: string;
-
-  /**
-   * Function version this alias refers to
-   *
-   * Use lambda.addVersion() to obtain a new lambda version to refer to.
-   */
-  readonly version: IVersion;
-
-  /**
-   * Name of this alias
-   */
-  readonly aliasName: string;
 
   /**
    * Additional versions with individual weights this alias points to
@@ -59,6 +52,30 @@ export interface AliasProps {
    * @default No additional versions
    */
   readonly additionalVersions?: VersionWeight[];
+
+  /**
+   * Specifies a provisioned concurrency configuration for a function's alias.
+   *
+   * @default No provisioned concurrency
+   */
+  readonly provisionedConcurrentExecutions?: number;
+}
+
+/**
+ * Properties for a new Lambda alias
+ */
+export interface AliasProps extends AliasOptions {
+  /**
+   * Name of this alias
+   */
+  readonly aliasName: string;
+
+  /**
+   * Function version this alias refers to
+   *
+   * Use lambda.addVersion() to obtain a new lambda version to refer to.
+   */
+  readonly version: IVersion;
 }
 
 export interface AliasAttributes {
@@ -80,7 +97,8 @@ export class Alias extends QualifiedFunctionBase implements IAlias {
       public readonly grantPrincipal = attrs.aliasVersion.grantPrincipal;
       public readonly role = attrs.aliasVersion.role;
 
-      protected readonly canCreatePermissions = false;
+      protected readonly canCreatePermissions = this._isStackAccount();
+      protected readonly qualifier = attrs.aliasName;
     }
     return new Imported(scope, id);
   }
@@ -111,7 +129,12 @@ export class Alias extends QualifiedFunctionBase implements IAlias {
    */
   public readonly functionArn: string;
 
+  protected readonly qualifier: string;
+
   protected readonly canCreatePermissions: boolean = true;
+
+  private scalableAlias?: ScalableFunctionAttribute;
+  private readonly scalingRole: iam.IRole;
 
   constructor(scope: Construct, id: string, props: AliasProps) {
     super(scope, id, {
@@ -127,8 +150,18 @@ export class Alias extends QualifiedFunctionBase implements IAlias {
       description: props.description,
       functionName: this.version.lambda.functionName,
       functionVersion: props.version.version,
-      routingConfig: this.determineRoutingConfig(props)
+      routingConfig: this.determineRoutingConfig(props),
+      provisionedConcurrencyConfig: this.determineProvisionedConcurrency(props),
     });
+
+    // Use a Service Linked Role
+    // https://docs.aws.amazon.com/autoscaling/application/userguide/application-auto-scaling-service-linked-roles.html
+    this.scalingRole = iam.Role.fromRoleArn(this, 'ScalingRole', this.stack.formatArn({
+      service: 'iam',
+      region: '',
+      resource: 'role/aws-service-role/lambda.application-autoscaling.amazonaws.com',
+      resourceName: 'AWSServiceRoleForApplicationAutoScaling_LambdaConcurrency',
+    }));
 
     this.functionArn = this.getResourceArnAttribute(alias.ref, {
       service: 'lambda',
@@ -137,10 +170,21 @@ export class Alias extends QualifiedFunctionBase implements IAlias {
       sep: ':',
     });
 
+    this.qualifier = extractQualifierFromArn(alias.ref);
+
+    if (props.onFailure || props.onSuccess || props.maxEventAge || props.retryAttempts !== undefined) {
+      this.configureAsyncInvoke({
+        onFailure: props.onFailure,
+        onSuccess: props.onSuccess,
+        maxEventAge: props.maxEventAge,
+        retryAttempts: props.retryAttempts,
+      });
+    }
+
     // ARN parsing splits on `:`, so we can only get the function's name from the ARN as resourceName...
     // And we're parsing it out (instead of using the underlying function directly) in order to have use of it incur
     // an implicit dependency on the resource.
-    this.functionName = `${this.stack.parseArn(this.functionArn, ":").resourceName!}:${this.aliasName}`;
+    this.functionName = `${this.stack.parseArn(this.functionArn, ':').resourceName!}:${this.aliasName}`;
   }
 
   public get grantPrincipal() {
@@ -152,16 +196,36 @@ export class Alias extends QualifiedFunctionBase implements IAlias {
   }
 
   public metric(metricName: string, props: cloudwatch.MetricOptions = {}): cloudwatch.Metric {
-    // Metrics on Aliases need the "bare" function name, and the alias' ARN, this differes from the base behavior.
+    // Metrics on Aliases need the "bare" function name, and the alias' ARN, this differs from the base behavior.
     return super.metric(metricName, {
       dimensions: {
         FunctionName: this.lambda.functionName,
-        // construct the ARN from the underlying lambda so that alarms on an alias
+        // construct the name from the underlying lambda so that alarms on an alias
         // don't cause a circular dependency with CodeDeploy
         // see: https://github.com/aws/aws-cdk/issues/2231
-        Resource: `${this.lambda.functionArn}:${this.aliasName}`
+        Resource: `${this.lambda.functionName}:${this.aliasName}`,
       },
-      ...props
+      ...props,
+    });
+  }
+
+  /**
+   * Configure provisioned concurrency autoscaling on a function alias. Returns a scalable attribute that can call
+   * `scaleOnUtilization()` and `scaleOnSchedule()`.
+   *
+   * @param options Autoscaling options
+   */
+  public addAutoScaling(options: AutoScalingOptions): IScalableFunctionAttribute {
+    if (this.scalableAlias) {
+      throw new Error('AutoScaling already enabled for this alias');
+    }
+    return this.scalableAlias = new ScalableFunctionAttribute(this, 'AliasScaling', {
+      minCapacity: options.minCapacity ?? 1,
+      maxCapacity: options.maxCapacity,
+      resourceId: `function:${this.functionName}`,
+      dimension: 'lambda:function:ProvisionedConcurrency',
+      serviceNamespace: appscaling.ServiceNamespace.LAMBDA,
+      role: this.scalingRole,
     });
   }
 
@@ -179,9 +243,9 @@ export class Alias extends QualifiedFunctionBase implements IAlias {
       additionalVersionWeights: props.additionalVersions.map(vw => {
         return {
           functionVersion: vw.version.version,
-          functionWeight: vw.weight
+          functionWeight: vw.weight,
         };
-      })
+      }),
     };
   }
 
@@ -199,6 +263,23 @@ export class Alias extends QualifiedFunctionBase implements IAlias {
     if (total > 1) {
       throw new Error(`Sum of additional version weights must not exceed 1, got: ${total}`);
     }
+  }
+
+  /**
+   * Validate that the provisionedConcurrentExecutions makes sense
+   *
+   * Member must have value greater than or equal to 1
+   */
+  private determineProvisionedConcurrency(props: AliasProps): CfnAlias.ProvisionedConcurrencyConfigurationProperty | undefined {
+    if (!props.provisionedConcurrentExecutions) {
+      return undefined;
+    }
+
+    if (props.provisionedConcurrentExecutions <= 0) {
+      throw new Error('provisionedConcurrentExecutions must have value greater than or equal to 1');
+    }
+
+    return { provisionedConcurrentExecutions: props.provisionedConcurrentExecutions };
   }
 }
 

@@ -1,7 +1,7 @@
 {
   "name": "@aws-cdk/aws-events",
-  "version": "1.0.0",
-  "description": "AWS CloudWatch Events Construct Library",
+  "version": "0.0.0",
+  "description": "Amazon EventBridge Construct Library",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "jsii": {
@@ -11,25 +11,24 @@
         "package": "software.amazon.awscdk.services.events",
         "maven": {
           "groupId": "software.amazon.awscdk",
-          "artifactId": "events",
-          "versionSuffix": ".DEVPREVIEW"
+          "artifactId": "events"
         }
       },
       "dotnet": {
         "namespace": "Amazon.CDK.AWS.Events",
         "packageId": "Amazon.CDK.AWS.Events",
-        "signAssembly": true,
-        "assemblyOriginatorKeyFile": "../../key.snk",
-        "versionSuffix": "-devpreview"
+        "iconUrl": "https://raw.githubusercontent.com/aws/aws-cdk/master/logo/default-256-dark.png"
       },
       "python": {
         "distName": "aws-cdk.aws-events",
-        "module": "aws_cdk.aws_events"
+        "module": "aws_cdk.aws_events",
+        "classifiers": [
+          "Framework :: AWS CDK",
+          "Framework :: AWS CDK :: 1"
+        ]
       }
     },
-    "metadata": {
-      "awsdocs:title": "Amazon CloudWatch Events"
-    }
+    "projectReferences": true
   },
   "repository": {
     "type": "git",
@@ -46,18 +45,25 @@
     "package": "cdk-package",
     "awslint": "cdk-awslint",
     "cfn2ts": "cfn2ts",
-    "build+test+package": "npm run build+test && npm run package",
-    "build+test": "npm run build && npm test"
+    "build+test+package": "yarn build+test && yarn package",
+    "build+test": "yarn build && yarn test",
+    "compat": "cdk-compat",
+    "gen": "cfn2ts",
+    "rosetta:extract": "yarn --silent jsii-rosetta extract"
   },
   "cdk-build": {
-    "cloudformation": "AWS::Events"
+    "cloudformation": "AWS::Events",
+    "env": {
+      "AWSLINT_BASE_CONSTRUCT": "true"
+    }
   },
   "keywords": [
     "aws",
     "cdk",
-    "cloudlib",
-    "aws-cloudlib",
-    "aws-clib"
+    "constructs",
+    "cloudwatch",
+    "events",
+    "eventbridge"
   ],
   "author": {
     "name": "Amazon Web Services",
@@ -66,28 +72,44 @@
   },
   "license": "Apache-2.0",
   "devDependencies": {
-    "@aws-cdk/assert": "^1.0.0",
-    "cdk-build-tools": "^1.0.0",
-    "cfn2ts": "^1.0.0",
-    "pkglint": "^1.0.0"
+    "@types/nodeunit": "^0.0.31",
+    "cdk-build-tools": "0.0.0",
+    "cfn2ts": "0.0.0",
+    "nodeunit": "^0.11.3",
+    "pkglint": "0.0.0",
+    "@aws-cdk/assert-internal": "0.0.0"
   },
   "dependencies": {
-    "@aws-cdk/aws-iam": "^1.0.0",
-    "@aws-cdk/core": "^1.0.0"
+    "@aws-cdk/aws-iam": "0.0.0",
+    "@aws-cdk/core": "0.0.0",
+    "constructs": "^3.3.69"
   },
   "homepage": "https://github.com/aws/aws-cdk",
   "peerDependencies": {
-    "@aws-cdk/aws-iam": "^1.0.0",
-    "@aws-cdk/core": "^1.0.0"
+    "@aws-cdk/aws-iam": "0.0.0",
+    "@aws-cdk/core": "0.0.0",
+    "constructs": "^3.3.69"
   },
   "engines": {
-    "node": ">= 8.10.0"
+    "node": ">= 10.13.0 <13 || >=13.7.0"
   },
   "awslint": {
     "exclude": [
       "from-method:@aws-cdk/aws-events.Rule",
-      "no-unused-type:@aws-cdk/aws-events.OnEventOptions"
+      "no-unused-type:@aws-cdk/aws-events.OnEventOptions",
+      "props-default-doc:@aws-cdk/aws-events.RuleTargetConfig.ecsParameters",
+      "props-default-doc:@aws-cdk/aws-events.RuleTargetConfig.kinesisParameters",
+      "props-default-doc:@aws-cdk/aws-events.RuleTargetConfig.role",
+      "props-default-doc:@aws-cdk/aws-events.RuleTargetConfig.runCommandParameters",
+      "props-default-doc:@aws-cdk/aws-events.RuleTargetConfig.sqsParameters"
     ]
   },
-  "stability": "stable"
+  "stability": "stable",
+  "awscdkio": {
+    "announce": false
+  },
+  "maturity": "stable",
+  "publishConfig": {
+    "tag": "latest"
+  }
 }

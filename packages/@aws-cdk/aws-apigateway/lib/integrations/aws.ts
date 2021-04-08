@@ -1,6 +1,5 @@
-import cdk = require('@aws-cdk/core');
-import { Stack } from '@aws-cdk/core';
-import { Integration, IntegrationOptions, IntegrationType } from '../integration';
+import * as cdk from '@aws-cdk/core';
+import { Integration, IntegrationConfig, IntegrationOptions, IntegrationType } from '../integration';
 import { Method } from '../method';
 import { parseAwsApiCall } from '../util';
 
@@ -61,6 +60,13 @@ export interface AwsIntegrationProps {
    * Integration options, such as content handling, request/response mapping, etc.
    */
   readonly options?: IntegrationOptions
+
+  /**
+   * The region of the integrated AWS service.
+   *
+   * @default - same region as the stack
+   */
+  readonly region?: string;
 }
 
 /**
@@ -79,21 +85,26 @@ export class AwsIntegration extends Integration {
     super({
       type,
       integrationHttpMethod: props.integrationHttpMethod || 'POST',
-      uri: cdk.Lazy.stringValue({ produce: () => {
-        if (!this.scope) { throw new Error('AwsIntegration must be used in API'); }
-        return Stack.of(this.scope).formatArn({
-          service: 'apigateway',
-          account: backend,
-          resource: apiType,
-          sep: '/',
-          resourceName: apiValue,
-        });
-      }}),
+      uri: cdk.Lazy.string({
+        produce: () => {
+          if (!this.scope) { throw new Error('AwsIntegration must be used in API'); }
+          return cdk.Stack.of(this.scope).formatArn({
+            service: 'apigateway',
+            account: backend,
+            resource: apiType,
+            sep: '/',
+            resourceName: apiValue,
+            region: props.region,
+          });
+        },
+      }),
       options: props.options,
     });
   }
 
-  public bind(method: Method) {
+  public bind(method: Method): IntegrationConfig {
+    const bindResult = super.bind(method);
     this.scope = method;
+    return bindResult;
   }
 }

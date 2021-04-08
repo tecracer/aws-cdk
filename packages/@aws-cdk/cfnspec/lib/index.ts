@@ -1,11 +1,14 @@
-import crypto = require('crypto');
-import schema = require('./schema');
+import * as crypto from 'crypto';
+import { CfnLintFileSchema } from './_private_schema/cfn-lint';
+import * as schema from './schema';
 export { schema };
+export * from './canned-metrics';
 
 /**
  * The complete AWS CloudFormation Resource specification, having any CDK patches and enhancements included in it.
  */
 export function specification(): schema.Specification {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   return require('../spec/specification.json');
 }
 
@@ -29,10 +32,24 @@ export function resourceSpecification(typeName: string): schema.ResourceType {
 export function resourceAugmentation(typeName: string): schema.ResourceAugmentation {
   const fileName = typeName.replace(/::/g, '_');
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     return require(`./augmentations/${fileName}.json`);
   } catch (e) {
     return {};
   }
+}
+
+/**
+ * Get the resource augmentations for a given type
+ */
+export function cfnLintAnnotations(typeName: string): schema.CfnLintResourceAnnotations {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const allAnnotations: CfnLintFileSchema = require('../spec/cfn-lint.json');
+
+  return {
+    stateful: !!allAnnotations.StatefulResources.ResourceTypes[typeName],
+    mustBeEmptyToDelete: allAnnotations.StatefulResources.ResourceTypes[typeName]?.DeleteRequiresEmptyResource ?? false,
+  };
 }
 
 /**

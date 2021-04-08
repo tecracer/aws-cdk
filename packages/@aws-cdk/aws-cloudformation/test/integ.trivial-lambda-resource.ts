@@ -1,7 +1,13 @@
-import lambda = require('@aws-cdk/aws-lambda');
-import cdk = require('@aws-cdk/core');
-import fs = require('fs');
+import * as fs from 'fs';
+import * as lambda from '@aws-cdk/aws-lambda';
+import * as cdk from '@aws-cdk/core';
 import { CustomResource, CustomResourceProvider } from '../lib';
+
+// keep this import separate from other imports to reduce chance for merge conflicts with v2-main
+// eslint-disable-next-line no-duplicate-imports, import/order
+import { Construct } from '@aws-cdk/core';
+
+/* eslint-disable cdk/no-core-construct */
 
 interface DemoResourceProps {
   /**
@@ -15,14 +21,14 @@ interface DemoResourceProps {
   failCreate?: boolean;
 }
 
-class DemoResource extends cdk.Construct {
+class DemoResource extends Construct {
   public readonly response: string;
 
-  constructor(scope: cdk.Construct, id: string, props: DemoResourceProps) {
+  constructor(scope: Construct, id: string, props: DemoResourceProps) {
     super(scope, id);
 
     const resource = new CustomResource(this, 'Resource', {
-      provider: CustomResourceProvider.lambda(new lambda.SingletonFunction(this, 'Singleton', {
+      provider: CustomResourceProvider.fromLambda(new lambda.SingletonFunction(this, 'Singleton', {
         uuid: 'f7d4f730-4ee1-11e8-9c2d-fa7ae01bbebc',
         // This makes the demo only work as top-level TypeScript program, but that's fine for now
         code: new lambda.InlineCode(fs.readFileSync('integ.trivial-lambda-provider.py', { encoding: 'utf-8' })),
@@ -30,7 +36,7 @@ class DemoResource extends cdk.Construct {
         timeout: cdk.Duration.minutes(5),
         runtime: lambda.Runtime.PYTHON_2_7,
       })),
-      properties: props
+      properties: props,
     });
 
     this.response = resource.getAtt('Response').toString();
@@ -51,7 +57,7 @@ class SucceedingStack extends cdk.Stack {
     // Publish the custom resource output
     new cdk.CfnOutput(this, 'ResponseMessage', {
       description: 'The message that came back from the Custom Resource',
-      value: resource.response
+      value: resource.response,
     });
   }
 }

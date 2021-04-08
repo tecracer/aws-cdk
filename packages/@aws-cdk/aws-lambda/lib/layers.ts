@@ -1,21 +1,13 @@
-import { Construct, IResource, Lazy, Resource } from '@aws-cdk/core';
+import { IResource, RemovalPolicy, Resource } from '@aws-cdk/core';
+import { Construct } from 'constructs';
 import { Code } from './code';
 import { CfnLayerVersion, CfnLayerVersionPermission } from './lambda.generated';
 import { Runtime } from './runtime';
 
-export interface LayerVersionProps {
-  /**
-   * The runtimes compatible with this Layer.
-   *
-   * @default - All runtimes are supported.
-   */
-  readonly compatibleRuntimes?: Runtime[];
-
-  /**
-   * The content of this Layer. Using *inline* (per ``code.isInline``) code is not permitted.
-   */
-  readonly code: Code;
-
+/**
+ * Non runtime options
+ */
+export interface LayerVersionOptions {
   /**
    * The description the this Lambda Layer.
    *
@@ -36,6 +28,30 @@ export interface LayerVersionProps {
    * @default - A name will be generated.
    */
   readonly layerVersionName?: string;
+
+  /**
+   * Whether to retain this version of the layer when a new version is added
+   * or when the stack is deleted.
+   *
+   * @default RemovalPolicy.DESTROY
+   */
+  readonly removalPolicy?: RemovalPolicy;
+}
+
+export interface LayerVersionProps extends LayerVersionOptions {
+  /**
+   * The runtimes compatible with this Layer.
+   *
+   * @default - All runtimes are supported.
+   */
+  readonly compatibleRuntimes?: Runtime[];
+
+  /**
+   * The content of this Layer.
+   *
+   * Using `Code.fromInline` is not supported.
+   */
+  readonly code: Code;
 }
 
 export interface ILayerVersion extends IResource {
@@ -98,7 +114,7 @@ export interface LayerVersionPermission {
   readonly accountId: string;
 
   /**
-   * The ID of the AWS Organization to hwich the grant is restricted.
+   * The ID of the AWS Organization to which the grant is restricted.
    *
    * Can only be specified if ``accountId`` is ``'*'``
    */
@@ -131,7 +147,7 @@ export class LayerVersion extends LayerVersionBase {
   public static fromLayerVersionArn(scope: Construct, id: string, layerVersionArn: string): ILayerVersion {
     return LayerVersion.fromLayerVersionAttributes(scope, id, {
       layerVersionArn,
-      compatibleRuntimes: Runtime.ALL
+      compatibleRuntimes: Runtime.ALL,
     });
   }
 
@@ -170,14 +186,32 @@ export class LayerVersion extends LayerVersionBase {
       throw new Error('Lambda layers cannot be created from inline code');
     }
     // Allow usage of the code in this context...
-    props.code.bind(this);
+    const code = props.code.bind(this);
+    if (code.inlineCode) {
+      throw new Error('Inline code is not supported for AWS Lambda layers');
+    }
+    if (!code.s3Location) {
+      throw new Error('Code must define an S3 location');
+    }
 
     const resource: CfnLayerVersion = new CfnLayerVersion(this, 'Resource', {
       compatibleRuntimes: props.compatibleRuntimes && props.compatibleRuntimes.map(r => r.name),
-      content: Lazy.anyValue({ produce: () => props.code._toJSON(resource) }),
+      content: {
+        s3Bucket: code.s3Location.bucketName,
+        s3Key: code.s3Location.objectKey,
+        s3ObjectVersion: code.s3Location.objectVersion,
+      },
       description: props.description,
       layerName: this.physicalName,
       licenseInfo: props.license,
+    });
+
+    if (props.removalPolicy) {
+      resource.applyRemovalPolicy(props.removalPolicy);
+    }
+
+    props.code.bindToResource(resource, {
+      resourceProperty: 'Content',
     });
 
     this.layerVersionArn = resource.ref;

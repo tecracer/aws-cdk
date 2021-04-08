@@ -1,6 +1,6 @@
-import colors = require('colors/safe');
-import stringWidth = require('string-width');
-import table = require('table');
+import * as colors from 'colors/safe';
+import * as stringWidth from 'string-width';
+import * as table from 'table';
 
 /**
  * Render a two-dimensional array to a visually attractive table
@@ -14,7 +14,7 @@ export function formatTable(cells: string[][], columns: number | undefined): str
     drawHorizontalLine: (line) => {
       // Numbering like this: [line 0] [header = row[0]] [line 1] [row 1] [line 2] [content 2] [line 3]
       return (line < 2 || line === cells.length) || lineBetween(cells[line - 1], cells[line]);
-    }
+    },
   }).trimRight();
 }
 
@@ -27,12 +27,13 @@ function lineBetween(rowA: string[], rowB: string[]) {
   return rowA[1] !== rowB[1];
 }
 
-function buildColumnConfig(widths: number[] | undefined): { [index: number]: table.ColumnConfig } | undefined {
+function buildColumnConfig(widths: number[] | undefined): { [index: number]: table.TableColumns } | undefined {
   if (widths === undefined) { return undefined; }
 
-  const ret: { [index: number]: table.ColumnConfig } = {};
+  const ret: { [index: number]: table.TableColumns } = {};
   widths.forEach((width, i) => {
-    ret[i] = { width, useWordWrap: true } as any; // 'useWordWrap' is not in @types/table
+    ret[i] = { width };
+
     if (width === undefined) {
       delete ret[i].width;
     }
@@ -96,7 +97,7 @@ function sum(xs: number[]): number {
 const tableColor = colors.gray;
 
 // Unicode table characters with a color
-const TABLE_BORDER_CHARACTERS =  {
+const TABLE_BORDER_CHARACTERS = {
   topBody: tableColor('─'),
   topJoin: tableColor('┬'),
   topLeft: tableColor('┌'),
@@ -111,5 +112,5 @@ const TABLE_BORDER_CHARACTERS =  {
   joinBody: tableColor('─'),
   joinLeft: tableColor('├'),
   joinRight: tableColor('┤'),
-  joinJoin: tableColor('┼')
+  joinJoin: tableColor('┼'),
 };

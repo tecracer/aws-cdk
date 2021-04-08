@@ -1,6 +1,7 @@
-import { Construct, IResource, Resource } from '@aws-cdk/core';
-import { CfnApplication } from "../codedeploy.generated";
-import { arnForApplication } from "../utils";
+import { IResource, Resource } from '@aws-cdk/core';
+import { Construct } from 'constructs';
+import { CfnApplication } from '../codedeploy.generated';
+import { arnForApplication } from '../utils';
 
 /**
  * Represents a reference to a CodeDeploy Application deploying to AWS Lambda.
@@ -65,7 +66,7 @@ export class LambdaApplication extends Resource implements ILambdaApplication {
 
     const resource = new CfnApplication(this, 'Resource', {
       applicationName: this.physicalName,
-      computePlatform: 'Lambda'
+      computePlatform: 'Lambda',
     });
 
     this.applicationName = this.getResourceNameAttribute(resource.ref);

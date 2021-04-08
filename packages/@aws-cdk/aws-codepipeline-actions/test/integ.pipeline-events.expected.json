@@ -6,20 +6,7 @@
         "KeyPolicy": {
           "Statement": [
             {
-              "Action": [
-                "kms:Create*",
-                "kms:Describe*",
-                "kms:Enable*",
-                "kms:List*",
-                "kms:Put*",
-                "kms:Update*",
-                "kms:Revoke*",
-                "kms:Disable*",
-                "kms:Get*",
-                "kms:Delete*",
-                "kms:ScheduleKeyDeletion",
-                "kms:CancelKeyDeletion"
-              ],
+              "Action": "kms:*",
               "Effect": "Allow",
               "Principal": {
                 "AWS": {
@@ -40,70 +27,13 @@
                 }
               },
               "Resource": "*"
-            },
-            {
-              "Action": [
-                "kms:Decrypt",
-                "kms:DescribeKey",
-                "kms:Encrypt",
-                "kms:ReEncrypt*",
-                "kms:GenerateDataKey*"
-              ],
-              "Effect": "Allow",
-              "Principal": {
-                "AWS": {
-                  "Fn::GetAtt": [
-                    "MyPipelineRoleC0D47CA4",
-                    "Arn"
-                  ]
-                }
-              },
-              "Resource": "*"
-            },
-            {
-              "Action": [
-                "kms:Decrypt",
-                "kms:DescribeKey",
-                "kms:Encrypt",
-                "kms:ReEncrypt*",
-                "kms:GenerateDataKey*"
-              ],
-              "Effect": "Allow",
-              "Principal": {
-                "AWS": {
-                  "Fn::GetAtt": [
-                    "MyPipelineSourceCodeCommitSourceCodePipelineActionRole0B6D0F4F",
-                    "Arn"
-                  ]
-                }
-              },
-              "Resource": "*"
-            },
-            {
-              "Action": [
-                "kms:Decrypt",
-                "kms:DescribeKey",
-                "kms:Encrypt",
-                "kms:ReEncrypt*",
-                "kms:GenerateDataKey*"
-              ],
-              "Effect": "Allow",
-              "Principal": {
-                "AWS": {
-                  "Fn::GetAtt": [
-                    "BuildProjectRoleAA92C755",
-                    "Arn"
-                  ]
-                }
-              },
-              "Resource": "*"
             }
           ],
           "Version": "2012-10-17"
         }
       },
-      "DeletionPolicy": "Retain",
-      "UpdateReplacePolicy": "Retain"
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
     },
     "MyPipelineArtifactsBucket727923DD": {
       "Type": "AWS::S3::Bucket",
@@ -122,10 +52,30 @@
               }
             }
           ]
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
         }
       },
-      "DeletionPolicy": "Retain",
-      "UpdateReplacePolicy": "Retain"
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "MyPipelineArtifactsBucketEncryptionKeyAlias9D4F8C59": {
+      "Type": "AWS::KMS::Alias",
+      "Properties": {
+        "AliasName": "alias/codepipeline-awscdkpipelineeventtargetmypipeline4ae5d407",
+        "TargetKeyId": {
+          "Fn::GetAtt": [
+            "MyPipelineArtifactsBucketEncryptionKey8BF0A7F3",
+            "Arn"
+          ]
+        }
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
     },
     "MyPipelineRoleC0D47CA4": {
       "Type": "AWS::IAM::Role",
@@ -136,17 +86,7 @@
               "Action": "sts:AssumeRole",
               "Effect": "Allow",
               "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "codepipeline.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
+                "Service": "codepipeline.amazonaws.com"
               }
             }
           ],
@@ -165,7 +105,7 @@
                 "s3:GetBucket*",
                 "s3:List*",
                 "s3:DeleteObject*",
-                "s3:PutObject*",
+                "s3:PutObject",
                 "s3:Abort*"
               ],
               "Effect": "Allow",
@@ -268,7 +208,6 @@
                   "BranchName": "master",
                   "PollForSourceChanges": true
                 },
-                "InputArtifacts": [],
                 "Name": "CodeCommitSource",
                 "OutputArtifacts": [
                   {
@@ -387,7 +326,7 @@
                 "s3:GetBucket*",
                 "s3:List*",
                 "s3:DeleteObject*",
-                "s3:PutObject*",
+                "s3:PutObject",
                 "s3:Abort*"
               ],
               "Effect": "Allow",
@@ -462,7 +401,7 @@
       "Properties": {
         "EventPattern": {
           "detail-type": [
-            "CodePipeline Stage Execution State Change"
+            "CodePipeline Action Execution State Change"
           ],
           "source": [
             "aws.codepipeline"
@@ -510,7 +449,7 @@
             "Arn": {
               "Ref": "MyTopic86869434"
             },
-            "Id": "awscdkpipelineeventtargetMyTopic8D32776A"
+            "Id": "Target0"
           }
         ]
       }
@@ -562,7 +501,7 @@
             "Arn": {
               "Ref": "MyTopic86869434"
             },
-            "Id": "awscdkpipelineeventtargetMyTopic8D32776A"
+            "Id": "Target0"
           }
         ]
       }
@@ -671,7 +610,7 @@
             "Arn": {
               "Ref": "MyTopic86869434"
             },
-            "Id": "awscdkpipelineeventtargetMyTopic8D32776A",
+            "Id": "Target0",
             "InputTransformer": {
               "InputPathsMap": {
                 "detail-pipeline": "$.detail.pipeline",
@@ -686,8 +625,7 @@
     "CodeCommitRepoDC6A41F9": {
       "Type": "AWS::CodeCommit::Repository",
       "Properties": {
-        "RepositoryName": "foo",
-        "Triggers": []
+        "RepositoryName": "foo"
       }
     },
     "BuildProjectRoleAA92C755": {
@@ -699,17 +637,7 @@
               "Action": "sts:AssumeRole",
               "Effect": "Allow",
               "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "codebuild.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
+                "Service": "codebuild.amazonaws.com"
               }
             }
           ],
@@ -785,7 +713,7 @@
                 "s3:GetBucket*",
                 "s3:List*",
                 "s3:DeleteObject*",
-                "s3:PutObject*",
+                "s3:PutObject",
                 "s3:Abort*"
               ],
               "Effect": "Allow",
@@ -827,6 +755,21 @@
                   "Arn"
                 ]
               }
+            },
+            {
+              "Action": [
+                "kms:Decrypt",
+                "kms:Encrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "MyPipelineArtifactsBucketEncryptionKey8BF0A7F3",
+                  "Arn"
+                ]
+              }
             }
           ],
           "Version": "2012-10-17"
@@ -848,6 +791,7 @@
         "Environment": {
           "ComputeType": "BUILD_GENERAL1_SMALL",
           "Image": "aws/codebuild/standard:1.0",
+          "ImagePullCredentialsType": "CODEBUILD",
           "PrivilegedMode": false,
           "Type": "LINUX_CONTAINER"
         },
@@ -859,6 +803,12 @@
         },
         "Source": {
           "Type": "CODEPIPELINE"
+        },
+        "EncryptionKey": {
+          "Fn::GetAtt": [
+            "MyPipelineArtifactsBucketEncryptionKey8BF0A7F3",
+            "Arn"
+          ]
         }
       }
     },
@@ -874,17 +824,7 @@
               "Action": "sns:Publish",
               "Effect": "Allow",
               "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "events.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
+                "Service": "events.amazonaws.com"
               },
               "Resource": {
                 "Ref": "MyTopic86869434"

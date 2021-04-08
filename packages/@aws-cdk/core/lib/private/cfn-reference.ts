@@ -1,7 +1,24 @@
-import { Reference } from "../reference";
-import { makeUniqueId } from './uniqueid';
+import { Reference } from '../reference';
 
 const CFN_REFERENCE_SYMBOL = Symbol.for('@aws-cdk/core.CfnReference');
+
+/**
+ * An enum that allows controlling how will the created reference
+ * be rendered in the resulting CloudFormation template.
+ */
+export enum ReferenceRendering {
+  /**
+   * Used for rendering a reference inside Fn::Sub expressions,
+   * which mean these must resolve to "${Sth}" instead of { Ref: "Sth" }.
+   */
+  FN_SUB,
+
+  /**
+   * Used for rendering Fn::GetAtt with its arguments in string form
+   * (as opposed to the more common arguments in array form, which we render by default).
+   */
+  GET_ATT_STRING,
+}
 
 /**
  * A Token that represents a CloudFormation reference to another resource
@@ -33,11 +50,21 @@ export class CfnReference extends Reference {
    * the prepare() phase (for the purpose of cross-stack references), it's
    * important that the state isn't lost if it's lazily created, like so:
    *
-   *     Lazy.stringValue({ produce: () => new CfnReference(...) })
+   *     Lazy.string({ produce: () => new CfnReference(...) })
+   *
    */
-  public static for(target: CfnElement, attribute: string) {
-    return CfnReference.singletonReference(target, attribute, () => {
-      const cfnIntrinsic = attribute === 'Ref' ? { Ref: target.logicalId } : { 'Fn::GetAtt': [ target.logicalId, attribute ]};
+  public static for(target: CfnElement, attribute: string, refRender?: ReferenceRendering) {
+    return CfnReference.singletonReference(target, attribute, refRender, () => {
+      const cfnIntrinsic = refRender === ReferenceRendering.FN_SUB
+        ? ('${' + target.logicalId + (attribute === 'Ref' ? '' : `.${attribute}`) + '}')
+        : (attribute === 'Ref'
+          ? { Ref: target.logicalId }
+          : {
+            'Fn::GetAtt': refRender === ReferenceRendering.GET_ATT_STRING
+              ? `${target.logicalId}.${attribute}`
+              : [target.logicalId, attribute],
+          }
+        );
       return new CfnReference(cfnIntrinsic, attribute, target);
     });
   }
@@ -46,7 +73,7 @@ export class CfnReference extends Reference {
    * Return a CfnReference that references a pseudo referencd
    */
   public static forPseudo(pseudoName: string, scope: Construct) {
-    return CfnReference.singletonReference(scope, `Pseudo:${pseudoName}`, () => {
+    return CfnReference.singletonReference(scope, `Pseudo:${pseudoName}`, undefined, () => {
       const cfnIntrinsic = { Ref: pseudoName };
       return new CfnReference(cfnIntrinsic, pseudoName, scope);
     });
@@ -58,50 +85,59 @@ export class CfnReference extends Reference {
   private static referenceTable = new Map<Construct, Map<string, CfnReference>>();
 
   /**
-   * Get or create the table
+   * Get or create the table.
+   * Passing fnSub = true allows cloudformation-include to correctly handle Fn::Sub.
    */
-  private static singletonReference(target: Construct, attribKey: string, fresh: () => CfnReference) {
+  private static singletonReference(target: Construct, attribKey: string, refRender: ReferenceRendering | undefined, fresh: () => CfnReference) {
     let attribs = CfnReference.referenceTable.get(target);
     if (!attribs) {
       attribs = new Map();
       CfnReference.referenceTable.set(target, attribs);
     }
-    let ref = attribs.get(attribKey);
+    let cacheKey = attribKey;
+    switch (refRender) {
+      case ReferenceRendering.FN_SUB:
+        cacheKey += 'Fn::Sub';
+        break;
+      case ReferenceRendering.GET_ATT_STRING:
+        cacheKey += 'Fn::GetAtt::String';
+        break;
+    }
+    let ref = attribs.get(cacheKey);
     if (!ref) {
       ref = fresh();
-      attribs.set(attribKey, ref);
+      attribs.set(cacheKey, ref);
     }
     return ref;
   }
 
   /**
-   * What stack this Token is pointing to
-   */
-  private readonly producingStack?: Stack;
-
-  /**
    * The Tokens that should be returned for each consuming stack (as decided by the producing Stack)
    */
   private readonly replacementTokens: Map<Stack, IResolvable>;
+  private readonly targetStack: Stack;
 
-  private readonly originalDisplayName: string;
-  private readonly humanReadableDesc: string;
-
-  protected constructor(value: any, private readonly displayName: string, target: IConstruct) {
+  protected constructor(value: any, displayName: string, target: IConstruct) {
     // prepend scope path to display name
-    super(value, target);
-    this.originalDisplayName = displayName;
-    this.replacementTokens = new Map<Stack, IResolvable>();
-    this.humanReadableDesc = `target = ${target.node.path}`;
+    super(value, target, displayName);
 
-    this.producingStack = Stack.of(target);
+    this.replacementTokens = new Map<Stack, IResolvable>();
+    this.targetStack = Stack.of(target);
+
     Object.defineProperty(this, CFN_REFERENCE_SYMBOL, { value: true });
   }
 
   public resolve(context: IResolveContext): any {
     // If we have a special token for this consuming stack, resolve that. Otherwise resolve as if
     // we are in the same stack.
-    const token = this.replacementTokens.get(Stack.of(context.scope));
+    const consumingStack = Stack.of(context.scope);
+    const token = this.replacementTokens.get(consumingStack);
+
+    // if (!token && this.isCrossStackReference(consumingStack) && !context.preparing) {
+    // eslint-disable-next-line max-len
+    //   throw new Error(`Cross-stack reference (${context.scope.node.path} -> ${this.target.node.path}) has not been assigned a value--call prepare() first`);
+    // }
+
     if (token) {
       return token.resolve(context);
     } else {
@@ -109,83 +145,37 @@ export class CfnReference extends Reference {
     }
   }
 
-  /**
-   * Register a stack this references is being consumed from.
-   */
-  public consumeFromStack(consumingStack: Stack, consumingConstruct: IConstruct) {
-    if (this.producingStack && consumingStack.node.root !== this.producingStack.node.root) {
-      throw this.newError(
-        `Cannot reference across apps. ` +
-        `Consuming and producing stacks must be defined within the same CDK app.`);
+  public hasValueForStack(stack: Stack) {
+    if (stack === this.targetStack) {
+      return true;
     }
 
-    // tslint:disable-next-line:max-line-length
-    if (this.producingStack && this.producingStack !== consumingStack && !this.replacementTokens.has(consumingStack)) {
-      // We're trying to resolve a cross-stack reference
-      consumingStack.addDependency(this.producingStack, `${consumingConstruct.node.path} -> ${this.target.node.path}.${this.originalDisplayName}`);
-      this.replacementTokens.set(consumingStack, this.exportValue(consumingStack));
-    }
+    return this.replacementTokens.has(stack);
   }
 
+  public assignValueForStack(stack: Stack, value: IResolvable) {
+    if (stack === this.targetStack) {
+      throw new Error('cannot assign a value for the same stack');
+    }
+
+    if (this.hasValueForStack(stack)) {
+      throw new Error('Cannot assign a reference value twice to the same stack. Use hasValueForStack to check first');
+    }
+
+    this.replacementTokens.set(stack, value);
+  }
   /**
    * Implementation of toString() that will use the display name
    */
   public toString(): string {
     return Token.asString(this, {
-      displayHint: `${this.target.node.id}.${this.displayName}`
+      displayHint: `${this.target.node.id}.${this.displayName}`,
     });
-  }
-
-  /**
-   * Export a Token value for use in another stack
-   *
-   * Works by mutating the producing stack in-place.
-   */
-  private exportValue(consumingStack: Stack): IResolvable {
-    const producingStack = this.producingStack!;
-
-    if (producingStack.environment !== consumingStack.environment) {
-      throw this.newError(`Can only reference cross stacks in the same region and account. ${this.humanReadableDesc}`);
-    }
-
-    // Ensure a singleton "Exports" scoping Construct
-    // This mostly exists to trigger LogicalID munging, which would be
-    // disabled if we parented constructs directly under Stack.
-    // Also it nicely prevents likely construct name clashes
-
-    const exportsName = 'Exports';
-    let stackExports = producingStack.node.tryFindChild(exportsName) as Construct;
-    if (stackExports === undefined) {
-      stackExports = new Construct(producingStack, exportsName);
-    }
-
-    // Ensure a singleton CfnOutput for this value
-    const resolved = producingStack.resolve(this);
-    const id = 'Output' + JSON.stringify(resolved);
-    const exportName = this.generateExportName(stackExports, id);
-    let output = stackExports.node.tryFindChild(id) as CfnOutput;
-    if (!output) {
-      output = new CfnOutput(stackExports, id, { value: Token.asString(this), exportName });
-    }
-
-    // We want to return an actual FnImportValue Token here, but Fn.importValue() returns a 'string',
-    // so construct one in-place.
-    return new Intrinsic({ 'Fn::ImportValue': exportName });
-  }
-
-  private generateExportName(stackExports: Construct, id: string) {
-    const stack = Stack.of(stackExports);
-    const components = [...stackExports.node.scopes.slice(2).map(c => c.node.id), id];
-    const prefix = stack.stackName ? stack.stackName + ':' : '';
-    const exportName = prefix + makeUniqueId(components);
-    return exportName;
   }
 }
 
-import { CfnElement } from "../cfn-element";
-import { CfnOutput } from "../cfn-output";
-import { Construct, IConstruct } from "../construct";
-import { IResolvable, IResolveContext } from "../resolvable";
-import { Stack } from "../stack";
-import { Token } from "../token";
-import { Intrinsic } from "./intrinsic";
+import { CfnElement } from '../cfn-element';
+import { Construct, IConstruct } from '../construct-compat';
+import { IResolvable, IResolveContext } from '../resolvable';
+import { Stack } from '../stack';
+import { Token } from '../token';

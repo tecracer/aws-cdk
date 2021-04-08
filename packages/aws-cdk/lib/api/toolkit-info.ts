@@ -1,103 +1,185 @@
-import cxapi = require('@aws-cdk/cx-api');
-import aws = require('aws-sdk');
-import colors = require('colors/safe');
-import { contentHash } from '../archive';
-import { debug } from '../logging';
-import { Mode } from './aws-auth/credentials';
-import { BUCKET_DOMAIN_NAME_OUTPUT, BUCKET_NAME_OUTPUT  } from './bootstrap-environment';
-import { waitForStack } from './util/cloudformation';
-import { SDK } from './util/sdk';
+import * as cxapi from '@aws-cdk/cx-api';
+import * as colors from 'colors/safe';
+import { debug, warning } from '../logging';
+import { ISDK } from './aws-auth';
+import { BOOTSTRAP_VERSION_OUTPUT, BUCKET_DOMAIN_NAME_OUTPUT, BUCKET_NAME_OUTPUT } from './bootstrap';
+import { stabilizeStack, CloudFormationStack } from './util/cloudformation';
 
-/** @experimental */
-export interface UploadProps {
-  s3KeyPrefix?: string,
-  s3KeySuffix?: string,
-  contentType?: string,
-}
+export const DEFAULT_TOOLKIT_STACK_NAME = 'CDKToolkit';
 
-/** @experimental */
-export interface Uploaded {
-  filename: string;
-  key: string;
-  hash: string;
-  changed: boolean;
-}
+/**
+ * The bootstrap template version that introduced ssm:GetParameter
+ */
+const BOOTSTRAP_TEMPLATE_VERSION_INTRODUCING_GETPARAMETER = 5;
 
-/** @experimental */
-export class ToolkitInfo {
-  public readonly sdk: SDK;
+/**
+ * Information on the Bootstrap stack of the environment we're deploying to.
+ *
+ * This class serves to:
+ *
+ * - Inspect the bootstrap stack, and return various properties of it for successful
+ *   asset deployment (in case of legacy-synthesized stacks).
+ * - Validate the version of the target environment, and nothing else (in case of
+ *   default-synthesized stacks).
+ *
+ * An object of this type might represent a bootstrap stack that could not be found.
+ * This is not an issue unless any members are used that require the bootstrap stack
+ * to have been found, in which case an error is thrown (default-synthesized stacks
+ * should never run into this as they don't need information from the bootstrap
+ * stack, all information is already encoded into the Cloud Assembly Manifest).
+ *
+ * Nevertheless, an instance of this class exists to serve as a cache for SSM
+ * parameter lookups (otherwise, the "bootstrap stack version" parameter would
+ * need to be read repeatedly).
+ *
+ * Called "ToolkitInfo" for historical reasons.
+ *
+ * @experimental
+ */
+export abstract class ToolkitInfo {
+  public static determineName(overrideName?: string) {
+    return overrideName ?? DEFAULT_TOOLKIT_STACK_NAME;
+  }
+
+  /** @experimental */
+  public static async lookup(environment: cxapi.Environment, sdk: ISDK, stackName: string | undefined): Promise<ToolkitInfo> {
+    const cfn = sdk.cloudFormation();
+    const stack = await stabilizeStack(cfn, stackName ?? DEFAULT_TOOLKIT_STACK_NAME);
+    if (!stack) {
+      debug('The environment %s doesn\'t have the CDK toolkit stack (%s) installed. Use %s to setup your environment for use with the toolkit.',
+        environment.name, stackName, colors.blue(`cdk bootstrap "${environment.name}"`));
+      return ToolkitInfo.bootstrapStackNotFoundInfo(sdk);
+    }
+    if (stack.stackStatus.isCreationFailure) {
+      // Treat a "failed to create" bootstrap stack as an absent one.
+      debug('The environment %s has a CDK toolkit stack (%s) that failed to create. Use %s to try provisioning it again.',
+        environment.name, stackName, colors.blue(`cdk bootstrap "${environment.name}"`));
+      return ToolkitInfo.bootstrapStackNotFoundInfo(sdk);
+    }
+
+    return new ExistingToolkitInfo(stack, sdk);
+  }
+
+  public static fromStack(stack: CloudFormationStack, sdk: ISDK): ToolkitInfo {
+    return new ExistingToolkitInfo(stack, sdk);
+  }
+
+  public static bootstraplessDeploymentsOnly(sdk: ISDK): ToolkitInfo {
+    return new BootstrapStackNotFoundInfo(sdk, 'Trying to perform an operation that requires a bootstrap stack; you should not see this error, this is a bug in the CDK CLI.');
+  }
+
+  public static bootstrapStackNotFoundInfo(sdk: ISDK): ToolkitInfo {
+    return new BootstrapStackNotFoundInfo(sdk, 'This deployment requires a bootstrap stack with a known name; pass \'--toolkit-stack-name\' or switch to using the \'DefaultStackSynthesizer\' (see https://docs.aws.amazon.com/cdk/latest/guide/bootstrapping.html)');
+  }
+
+  public abstract readonly found: boolean;
+  public abstract readonly bucketUrl: string;
+  public abstract readonly bucketName: string;
+  public abstract readonly version: number;
+  public abstract readonly bootstrapStack: CloudFormationStack;
+
+  private readonly ssmCache = new Map<string, number>();
+
+  constructor(protected readonly sdk: ISDK) {
+  }
+  public abstract validateVersion(expectedVersion: number, ssmParameterName: string | undefined): Promise<void>;
+  public abstract prepareEcrRepository(repositoryName: string): Promise<EcrRepositoryInfo>;
 
   /**
-   * A cache of previous uploads done in this session
+   * Read a version from an SSM parameter, cached
    */
-  private readonly previousUploads: {[key: string]: Uploaded} = {};
+  protected async versionFromSsmParameter(parameterName: string): Promise<number> {
+    const existing = this.ssmCache.get(parameterName);
+    if (existing !== undefined) { return existing; }
 
-  constructor(private readonly props: {
-    sdk: SDK,
-    bucketName: string,
-    bucketEndpoint: string,
-    environment: cxapi.Environment
-  }) {
-    this.sdk = props.sdk;
+    const ssm = this.sdk.ssm();
+
+    try {
+      const result = await ssm.getParameter({ Name: parameterName }).promise();
+
+      const asNumber = parseInt(`${result.Parameter?.Value}`, 10);
+      if (isNaN(asNumber)) {
+        throw new Error(`SSM parameter ${parameterName} not a number: ${result.Parameter?.Value}`);
+      }
+
+      this.ssmCache.set(parameterName, asNumber);
+      return asNumber;
+    } catch (e) {
+      if (e.code === 'ParameterNotFound') {
+        throw new Error(`SSM parameter ${parameterName} not found. Has the environment been bootstrapped? Please run \'cdk bootstrap\' (see https://docs.aws.amazon.com/cdk/latest/guide/bootstrapping.html)`);
+      }
+      throw e;
+    }
+  }
+}
+
+/**
+ * Returned when a bootstrap stack is found
+ */
+class ExistingToolkitInfo extends ToolkitInfo {
+  public readonly found = true;
+
+  constructor(public readonly bootstrapStack: CloudFormationStack, sdk: ISDK) {
+    super(sdk);
   }
 
   public get bucketUrl() {
-    return `https://${this.props.bucketEndpoint}`;
+    return `https://${this.requireOutput(BUCKET_DOMAIN_NAME_OUTPUT)}`;
   }
 
   public get bucketName() {
-    return this.props.bucketName;
+    return this.requireOutput(BUCKET_NAME_OUTPUT);
+  }
+
+  public get version() {
+    return parseInt(this.bootstrapStack.outputs[BOOTSTRAP_VERSION_OUTPUT] ?? '0', 10);
+  }
+
+  public get parameters(): Record<string, string> {
+    return this.bootstrapStack.parameters ?? {};
+  }
+
+  public get terminationProtection(): boolean {
+    return this.bootstrapStack.terminationProtection ?? false;
   }
 
   /**
-   * Uploads a data blob to S3 under the specified key prefix.
-   * Uses a hash to render the full key and skips upload if an object
-   * already exists by this key.
+   * Validate that the bootstrap stack version matches or exceeds the expected version
+   *
+   * Use the SSM parameter name to read the version number if given, otherwise use the version
+   * discovered on the bootstrap stack.
+   *
+   * Pass in the SSM parameter name so we can cache the lookups an don't need to do the same
+   * lookup again and again for every artifact.
    */
-  public async uploadIfChanged(data: string | Buffer | DataView, props: UploadProps): Promise<Uploaded> {
-    const s3 = await this.props.sdk.s3(this.props.environment.account, this.props.environment.region, Mode.ForWriting);
+  public async validateVersion(expectedVersion: number, ssmParameterName: string | undefined) {
+    let version = this.version; // Default to the current version, but will be overwritten by a lookup if required.
 
-    const s3KeyPrefix = props.s3KeyPrefix || '';
-    const s3KeySuffix = props.s3KeySuffix || '';
+    if (ssmParameterName !== undefined) {
+      try {
+        version = await this.versionFromSsmParameter(ssmParameterName);
+      } catch (e) {
+        if (e.code !== 'AccessDeniedException') { throw e; }
 
-    const bucket = this.props.bucketName;
+        // This is a fallback! The bootstrap template that goes along with this change introduces
+        // a new 'ssm:GetParameter' permission, but when run using the previous bootstrap template we
+        // won't have the permissions yet to read the version, so we won't be able to show the
+        // message telling the user they need to update! When we see an AccessDeniedException, fall
+        // back to the version we read from Stack Outputs; but ONLY if the version we discovered via
+        // outputs is legitimately an old version. If it's newer than that, something else must be broken,
+        // so let it fail as it would if we didn't have this fallback.
+        if (this.version >= BOOTSTRAP_TEMPLATE_VERSION_INTRODUCING_GETPARAMETER) {
+          throw e;
+        }
 
-    const hash = contentHash(data);
-    const filename = `${hash}${s3KeySuffix}`;
-    const key = `${s3KeyPrefix}${filename}`;
-    const url = `s3://${bucket}/${key}`;
-
-    debug(`${url}: checking if already exists`);
-    if (await objectExists(s3, bucket, key)) {
-      debug(`${url}: found (skipping upload)`);
-      return { filename, key, hash, changed: false };
+        warning(`Could not read SSM parameter ${ssmParameterName}: ${e.message}`);
+        // Fall through on purpose
+      }
     }
 
-    const uploaded = { filename, key, hash, changed: true };
-
-    // Upload if it's new or server-side copy if it was already uploaded previously
-    const previous = this.previousUploads[hash];
-    if (previous) {
-      debug(`${url}: copying`);
-      await s3.copyObject({
-        Bucket: bucket,
-        Key: key,
-        CopySource: `${bucket}/${previous.key}`
-      }).promise();
-      debug(`${url}: copy complete`);
-    } else {
-      debug(`${url}: uploading`);
-      await s3.putObject({
-        Bucket: bucket,
-        Key: key,
-        Body: data,
-        ContentType: props.contentType
-      }).promise();
-      debug(`${url}: upload complete`);
-      this.previousUploads[hash] = uploaded;
+    if (expectedVersion > version) {
+      throw new Error(`This CDK deployment requires bootstrap stack version '${expectedVersion}', found '${version}'. Please run 'cdk bootstrap'.`);
     }
-
-    return uploaded;
   }
 
   /**
@@ -105,95 +187,114 @@ export class ToolkitInfo {
    *
    * @experimental
    */
-  public async prepareEcrRepository(asset: cxapi.ContainerImageAssetMetadataEntry): Promise<EcrRepositoryInfo> {
-    const ecr = await this.props.sdk.ecr(this.props.environment.account, this.props.environment.region, Mode.ForWriting);
-    let repositoryName;
-    if ( asset.repositoryName ) {
-      // Repository name provided by user
-      repositoryName = asset.repositoryName;
-    } else {
-      // Repository name based on asset id
-      const assetId = asset.id;
-      repositoryName = 'cdk/' + assetId.replace(/[:/]/g, '-').toLowerCase();
+  public async prepareEcrRepository(repositoryName: string): Promise<EcrRepositoryInfo> {
+    if (!this.sdk) {
+      throw new Error('ToolkitInfo needs to have been initialized with an sdk to call prepareEcrRepository');
     }
+    const ecr = this.sdk.ecr();
 
-    let repository;
+    // check if repo already exists
     try {
-      debug(`${repositoryName}: checking for repository.`);
+      debug(`${repositoryName}: checking if ECR repository already exists`);
       const describeResponse = await ecr.describeRepositories({ repositoryNames: [repositoryName] }).promise();
-      repository = describeResponse.repositories![0];
+      const existingRepositoryUri = describeResponse.repositories![0]?.repositoryUri;
+      if (existingRepositoryUri) {
+        return { repositoryUri: existingRepositoryUri };
+      }
     } catch (e) {
       if (e.code !== 'RepositoryNotFoundException') { throw e; }
     }
 
-    if (repository) {
-      return {
-        repositoryUri: repository.repositoryUri!,
-        repositoryName
-      };
+    // create the repo (tag it so it will be easier to garbage collect in the future)
+    debug(`${repositoryName}: creating ECR repository`);
+    const assetTag = { Key: 'awscdk:asset', Value: 'true' };
+    const response = await ecr.createRepository({ repositoryName, tags: [assetTag] }).promise();
+    const repositoryUri = response.repository?.repositoryUri;
+    if (!repositoryUri) {
+      throw new Error(`CreateRepository did not return a repository URI for ${repositoryUri}`);
     }
 
-    debug(`${repositoryName}: creating`);
-    const response = await ecr.createRepository({ repositoryName }).promise();
-    repository = response.repository!;
+    // configure image scanning on push (helps in identifying software vulnerabilities, no additional charge)
+    debug(`${repositoryName}: enable image scanning`);
+    await ecr.putImageScanningConfiguration({ repositoryName, imageScanningConfiguration: { scanOnPush: true } }).promise();
 
-    // Better put a lifecycle policy on this so as to not cost too much money
-    await ecr.putLifecyclePolicy({
-      repositoryName,
-      lifecyclePolicyText: JSON.stringify(DEFAULT_REPO_LIFECYCLE)
-    }).promise();
-
-    return {
-      repositoryUri: repository.repositoryUri!,
-      repositoryName
-    };
+    return { repositoryUri };
   }
 
-  /**
-   * Get ECR credentials
-   */
-  public async getEcrCredentials(): Promise<EcrCredentials> {
-    const ecr = await this.props.sdk.ecr(this.props.environment.account, this.props.environment.region, Mode.ForReading);
-
-    debug(`Fetching ECR authorization token`);
-    const authData =  (await ecr.getAuthorizationToken({ }).promise()).authorizationData || [];
-    if (authData.length === 0) {
-      throw new Error('No authorization data received from ECR');
+  private requireOutput(output: string): string {
+    if (!(output in this.bootstrapStack.outputs)) {
+      throw new Error(`The CDK toolkit stack (${this.bootstrapStack.stackName}) does not have an output named ${output}. Use 'cdk bootstrap' to correct this.`);
     }
-    const token = Buffer.from(authData[0].authorizationToken!, 'base64').toString('ascii');
-    const [username, password] = token.split(':');
+    return this.bootstrapStack.outputs[output];
+  }
+}
 
-    return {
-      username,
-      password,
-      endpoint: authData[0].proxyEndpoint!,
-    };
+/**
+ * Returned when a bootstrap stack could not be found
+ *
+ * This is not an error in principle, UNTIL one of the members is called that requires
+ * the bootstrap stack to have been found, in which case the lookup error is still thrown
+ * belatedly.
+ *
+ * The errors below serve as a last stop-gap message--normally calling code should have
+ * checked `toolkit.found` and produced an appropriate error message.
+ */
+class BootstrapStackNotFoundInfo extends ToolkitInfo {
+  public readonly found = false;
+
+  constructor(sdk: ISDK, private readonly errorMessage: string) {
+    super(sdk);
   }
 
-  /**
-   * Check if image already exists in ECR repository
-   */
-  public async checkEcrImage(repositoryName: string, imageTag: string): Promise<boolean> {
-    const ecr = await this.props.sdk.ecr(this.props.environment.account, this.props.environment.region, Mode.ForReading);
+  public get bootstrapStack(): CloudFormationStack {
+    throw new Error(this.errorMessage);
+  }
 
+  public get bucketUrl(): string {
+    throw new Error(this.errorMessage);
+  }
+
+  public get bucketName(): string {
+    throw new Error(this.errorMessage);
+  }
+
+  public get version(): number {
+    throw new Error(this.errorMessage);
+  }
+
+  public async validateVersion(expectedVersion: number, ssmParameterName: string | undefined): Promise<void> {
+    if (ssmParameterName === undefined) {
+      throw new Error(this.errorMessage);
+    }
+
+    let version: number;
     try {
-      debug(`${repositoryName}: checking for image ${imageTag}`);
-      await ecr.describeImages({ repositoryName, imageIds: [{ imageTag }] }).promise();
-
-      // If we got here, the image already exists. Nothing else needs to be done.
-      return true;
+      version = await this.versionFromSsmParameter(ssmParameterName);
     } catch (e) {
-      if (e.code !== 'ImageNotFoundException') { throw e; }
+      if (e.code !== 'AccessDeniedException') { throw e; }
+
+      // This is a fallback! The bootstrap template that goes along with this change introduces
+      // a new 'ssm:GetParameter' permission, but when run using a previous bootstrap template we
+      // won't have the permissions yet to read the version, so we won't be able to show the
+      // message telling the user they need to update! When we see an AccessDeniedException, fall
+      // back to the version we read from Stack Outputs.
+      warning(`Could not read SSM parameter ${ssmParameterName}: ${e.message}`);
+      throw new Error(`This CDK deployment requires bootstrap stack version '${expectedVersion}', found an older version. Please run 'cdk bootstrap'.`);
     }
 
-    return false;
+    if (expectedVersion > version) {
+      throw new Error(`This CDK deployment requires bootstrap stack version '${expectedVersion}', found '${version}'. Please run 'cdk bootstrap'.`);
+    }
+  }
+
+  public prepareEcrRepository(): Promise<EcrRepositoryInfo> {
+    throw new Error(this.errorMessage);
   }
 }
 
 /** @experimental */
 export interface EcrRepositoryInfo {
   repositoryUri: string;
-  repositoryName: string;
 }
 
 /** @experimental */
@@ -202,59 +303,3 @@ export interface EcrCredentials {
   password: string;
   endpoint: string;
 }
-
-async function objectExists(s3: aws.S3, bucket: string, key: string) {
-  try {
-    await s3.headObject({ Bucket: bucket, Key: key }).promise();
-    return true;
-  } catch (e) {
-    if (e.code === 'NotFound') {
-      return false;
-    }
-
-    throw e;
-  }
-}
-
-/** @experimental */
-export async function loadToolkitInfo(environment: cxapi.Environment, sdk: SDK, stackName: string): Promise<ToolkitInfo | undefined> {
-  const cfn = await sdk.cloudFormation(environment.account, environment.region, Mode.ForReading);
-  const stack = await waitForStack(cfn, stackName);
-  if (!stack) {
-    debug('The environment %s doesn\'t have the CDK toolkit stack (%s) installed. Use %s to setup your environment for use with the toolkit.',
-        environment.name, stackName, colors.blue(`cdk bootstrap "${environment.name}"`));
-    return undefined;
-  }
-  return new ToolkitInfo({
-    sdk, environment,
-    bucketName: getOutputValue(stack, BUCKET_NAME_OUTPUT),
-    bucketEndpoint: getOutputValue(stack, BUCKET_DOMAIN_NAME_OUTPUT)
-  });
-}
-
-function getOutputValue(stack: aws.CloudFormation.Stack, output: string): string {
-  let result: string | undefined;
-  if (stack.Outputs) {
-    const found = stack.Outputs.find(o => o.OutputKey === output);
-    result = found && found.OutputValue;
-  }
-  if (result === undefined) {
-    throw new Error(`The CDK toolkit stack (${stack.StackName}) does not have an output named ${output}. Use 'cdk bootstrap' to correct this.`);
-  }
-  return result;
-}
-
-const DEFAULT_REPO_LIFECYCLE = {
-  rules: [
-    {
-      rulePriority: 100,
-      description: 'Retain only 5 images',
-      selection: {
-        tagStatus: 'any',
-        countType: 'imageCountMoreThan',
-        countNumber: 5,
-      },
-      action: { type: 'expire' }
-    }
-  ]
-};

@@ -1,17 +1,17 @@
-import { expect, haveResource, SynthUtils } from '@aws-cdk/assert';
-import autoscaling = require('@aws-cdk/aws-autoscaling');
-import cloudwatch = require('@aws-cdk/aws-cloudwatch');
-import ec2 = require('@aws-cdk/aws-ec2');
-import lbv2 = require('@aws-cdk/aws-elasticloadbalancingv2');
-import cdk = require('@aws-cdk/core');
+import { expect, haveOutput, haveResource, SynthUtils } from '@aws-cdk/assert-internal';
+import * as autoscaling from '@aws-cdk/aws-autoscaling';
+import * as cloudwatch from '@aws-cdk/aws-cloudwatch';
+import * as ec2 from '@aws-cdk/aws-ec2';
+import * as lbv2 from '@aws-cdk/aws-elasticloadbalancingv2';
+import * as cdk from '@aws-cdk/core';
 import { Test } from 'nodeunit';
-import codedeploy = require('../../lib');
+import * as codedeploy from '../../lib';
 
-// tslint:disable:object-literal-key-quotes
+/* eslint-disable quote-props */
 
 export = {
   'CodeDeploy Server Deployment Group': {
-    "can be created by explicitly passing an Application"(test: Test) {
+    'can be created by explicitly passing an Application'(test: Test) {
       const stack = new cdk.Stack();
 
       const application = new codedeploy.ServerApplication(stack, 'MyApp');
@@ -20,9 +20,28 @@ export = {
       });
 
       expect(stack).to(haveResource('AWS::CodeDeploy::DeploymentGroup', {
-        "ApplicationName": {
-          "Ref": "MyApp3CE31C26"
+        'ApplicationName': {
+          'Ref': 'MyApp3CE31C26',
         },
+      }));
+
+      test.done();
+    },
+
+    'creating an application with physical name if needed'(test: Test) {
+      const stack = new cdk.Stack(undefined, undefined, { env: { account: '12345', region: 'us-test-1' } });
+      const stack2 = new cdk.Stack(undefined, undefined, { env: { account: '12346', region: 'us-test-2' } });
+      const serverDeploymentGroup = new codedeploy.ServerDeploymentGroup(stack, 'MyDG', {
+        deploymentGroupName: cdk.PhysicalName.GENERATE_IF_NEEDED,
+      });
+
+      new cdk.CfnOutput(stack2, 'Output', {
+        value: serverDeploymentGroup.application.applicationName,
+      });
+
+      expect(stack2).to(haveOutput({
+        outputName: 'Output',
+        outputValue: 'defaultmydgapplication78dba0bb0c7580b32033',
       }));
 
       test.done();
@@ -42,7 +61,79 @@ export = {
       test.done();
     },
 
-    "created with ASGs contains the ASG names"(test: Test) {
+    'uses good linux install agent script'(test: Test) {
+      const stack = new cdk.Stack();
+
+      const asg = new autoscaling.AutoScalingGroup(stack, 'ASG', {
+        instanceType: ec2.InstanceType.of(ec2.InstanceClass.STANDARD3, ec2.InstanceSize.SMALL),
+        machineImage: new ec2.AmazonLinuxImage(),
+        vpc: new ec2.Vpc(stack, 'VPC'),
+      });
+
+      new codedeploy.ServerDeploymentGroup(stack, 'DeploymentGroup', {
+        autoScalingGroups: [asg],
+        installAgent: true,
+      });
+
+      expect(stack).to(haveResource('AWS::AutoScaling::LaunchConfiguration', {
+        'UserData': {
+          'Fn::Base64': {
+            'Fn::Join': [
+              '',
+              [
+                '#!/bin/bash\nset +e\nPKG_CMD=`which yum 2>/dev/null`\nset -e\nif [ -z "$PKG_CMD" ]; then\nPKG_CMD=apt-get\nelse\nPKG_CMD=yum\nfi\n$PKG_CMD update -y\nset +e\n$PKG_CMD install -y ruby2.0\nRUBY2_INSTALL=$?\nset -e\nif [ $RUBY2_INSTALL -ne 0 ]; then\n$PKG_CMD install -y ruby\nfi\nAWS_CLI_PACKAGE_NAME=awscli\nif [ "$PKG_CMD" = "yum" ]; then\nAWS_CLI_PACKAGE_NAME=aws-cli\nfi\n$PKG_CMD install -y $AWS_CLI_PACKAGE_NAME\nTMP_DIR=`mktemp -d`\ncd $TMP_DIR\naws s3 cp s3://aws-codedeploy-',
+                {
+                  'Ref': 'AWS::Region',
+                },
+                '/latest/install . --region ',
+                {
+                  'Ref': 'AWS::Region',
+                },
+                '\nchmod +x ./install\n./install auto\nrm -fr $TMP_DIR',
+              ],
+            ],
+          },
+        },
+      }));
+
+      test.done();
+    },
+
+    'uses good windows install agent script'(test: Test) {
+      const stack = new cdk.Stack();
+
+      const asg = new autoscaling.AutoScalingGroup(stack, 'ASG', {
+        instanceType: ec2.InstanceType.of(ec2.InstanceClass.STANDARD3, ec2.InstanceSize.SMALL),
+        machineImage: new ec2.WindowsImage(ec2.WindowsVersion.WINDOWS_SERVER_2019_ENGLISH_FULL_BASE, {}),
+        vpc: new ec2.Vpc(stack, 'VPC'),
+      });
+
+      new codedeploy.ServerDeploymentGroup(stack, 'DeploymentGroup', {
+        autoScalingGroups: [asg],
+        installAgent: true,
+      });
+
+      expect(stack).to(haveResource('AWS::AutoScaling::LaunchConfiguration', {
+        'UserData': {
+          'Fn::Base64': {
+            'Fn::Join': [
+              '',
+              [
+                '<powershell>Set-Variable -Name TEMPDIR -Value (New-TemporaryFile).DirectoryName\naws s3 cp s3://aws-codedeploy-',
+                {
+                  'Ref': 'AWS::Region',
+                },
+                '/latest/codedeploy-agent.msi $TEMPDIR\\codedeploy-agent.msi\ncd $TEMPDIR\n.\\codedeploy-agent.msi /quiet /l c:\\temp\\host-agent-install-log.txt</powershell>',
+              ],
+            ],
+          },
+        },
+      }));
+
+      test.done();
+    },
+
+    'created with ASGs contains the ASG names'(test: Test) {
       const stack = new cdk.Stack();
 
       const asg = new autoscaling.AutoScalingGroup(stack, 'ASG', {
@@ -56,17 +147,17 @@ export = {
       });
 
       expect(stack).to(haveResource('AWS::CodeDeploy::DeploymentGroup', {
-        "AutoScalingGroups": [
+        'AutoScalingGroups': [
           {
-          "Ref": "ASG46ED3070",
+            'Ref': 'ASG46ED3070',
           },
-        ]
+        ],
       }));
 
       test.done();
     },
 
-    "created without ASGs but adding them later contains the ASG names"(test: Test) {
+    'created without ASGs but adding them later contains the ASG names'(test: Test) {
       const stack = new cdk.Stack();
 
       const asg = new autoscaling.AutoScalingGroup(stack, 'ASG', {
@@ -79,11 +170,11 @@ export = {
       deploymentGroup.addAutoScalingGroup(asg);
 
       expect(stack).to(haveResource('AWS::CodeDeploy::DeploymentGroup', {
-        "AutoScalingGroups": [
+        'AutoScalingGroups': [
           {
-          "Ref": "ASG46ED3070",
+            'Ref': 'ASG46ED3070',
           },
-        ]
+        ],
       }));
 
       test.done();
@@ -103,20 +194,20 @@ export = {
       });
 
       expect(stack).to(haveResource('AWS::CodeDeploy::DeploymentGroup', {
-        "LoadBalancerInfo": {
-          "TargetGroupInfoList": [
+        'LoadBalancerInfo': {
+          'TargetGroupInfoList': [
             {
-              "Name": {
-                "Fn::GetAtt": [
-                  "ALBListenerFleetGroup008CEEE4",
-                  "TargetGroupName",
+              'Name': {
+                'Fn::GetAtt': [
+                  'ALBListenerFleetGroup008CEEE4',
+                  'TargetGroupName',
                 ],
               },
             },
           ],
         },
-        "DeploymentStyle": {
-          "DeploymentOption": "WITH_TRAFFIC_CONTROL",
+        'DeploymentStyle': {
+          'DeploymentOption': 'WITH_TRAFFIC_CONTROL',
         },
       }));
 
@@ -137,20 +228,20 @@ export = {
       });
 
       expect(stack).to(haveResource('AWS::CodeDeploy::DeploymentGroup', {
-        "LoadBalancerInfo": {
-          "TargetGroupInfoList": [
+        'LoadBalancerInfo': {
+          'TargetGroupInfoList': [
             {
-              "Name": {
-                "Fn::GetAtt": [
-                  "NLBListenerFleetGroupB882EC86",
-                  "TargetGroupName",
+              'Name': {
+                'Fn::GetAtt': [
+                  'NLBListenerFleetGroupB882EC86',
+                  'TargetGroupName',
                 ],
               },
             },
           ],
         },
-        "DeploymentStyle": {
-          "DeploymentOption": "WITH_TRAFFIC_CONTROL",
+        'DeploymentStyle': {
+          'DeploymentOption': 'WITH_TRAFFIC_CONTROL',
         },
       }));
 
@@ -170,18 +261,18 @@ export = {
       });
 
       expect(stack).to(haveResource('AWS::CodeDeploy::DeploymentGroup', {
-        "Ec2TagSet": {
-          "Ec2TagSetList": [
+        'Ec2TagSet': {
+          'Ec2TagSetList': [
             {
-              "Ec2TagGroup": [
+              'Ec2TagGroup': [
                 {
-                  "Key": "some-key",
-                  "Value": "some-value",
-                  "Type": "KEY_AND_VALUE",
+                  'Key': 'some-key',
+                  'Value': 'some-value',
+                  'Type': 'KEY_AND_VALUE',
                 },
                 {
-                  "Key": "other-key",
-                  "Type": "KEY_ONLY",
+                  'Key': 'other-key',
+                  'Type': 'KEY_ONLY',
                 },
               ],
             },
@@ -207,27 +298,27 @@ export = {
       });
 
       expect(stack).to(haveResource('AWS::CodeDeploy::DeploymentGroup', {
-        "OnPremisesTagSet": {
-          "OnPremisesTagSetList": [
+        'OnPremisesTagSet': {
+          'OnPremisesTagSetList': [
             {
-              "OnPremisesTagGroup": [
+              'OnPremisesTagGroup': [
                 {
-                  "Key": "some-key",
-                  "Value": "some-value",
-                  "Type": "KEY_AND_VALUE",
+                  'Key': 'some-key',
+                  'Value': 'some-value',
+                  'Type': 'KEY_AND_VALUE',
                 },
                 {
-                  "Key": "some-key",
-                  "Value": "another-value",
-                  "Type": "KEY_AND_VALUE",
+                  'Key': 'some-key',
+                  'Value': 'another-value',
+                  'Type': 'KEY_AND_VALUE',
                 },
               ],
             },
             {
-              "OnPremisesTagGroup": [
+              'OnPremisesTagGroup': [
                 {
-                  "Value": "keyless-value",
-                  "Type": "VALUE_ONLY",
+                  'Value': 'keyless-value',
+                  'Type': 'VALUE_ONLY',
                 },
               ],
             },
@@ -280,15 +371,15 @@ export = {
       deploymentGroup.addAlarm(alarm);
 
       expect(stack).to(haveResource('AWS::CodeDeploy::DeploymentGroup', {
-        "AlarmConfiguration": {
-          "Alarms": [
+        'AlarmConfiguration': {
+          'Alarms': [
             {
-              "Name": {
-                "Ref": "Alarm1F9009D71",
+              'Name': {
+                'Ref': 'Alarm1F9009D71',
               },
             },
           ],
-          "Enabled": true,
+          'Enabled': true,
         },
       }));
 
@@ -301,10 +392,10 @@ export = {
       new codedeploy.ServerDeploymentGroup(stack, 'DeploymentGroup');
 
       expect(stack).to(haveResource('AWS::CodeDeploy::DeploymentGroup', {
-        "AutoRollbackConfiguration": {
-          "Enabled": true,
-          "Events": [
-            "DEPLOYMENT_FAILURE",
+        'AutoRollbackConfiguration': {
+          'Enabled': true,
+          'Events': [
+            'DEPLOYMENT_FAILURE',
           ],
         },
       }));
@@ -332,10 +423,10 @@ export = {
       deploymentGroup.addAlarm(alarm);
 
       expect(stack).to(haveResource('AWS::CodeDeploy::DeploymentGroup', {
-        "AutoRollbackConfiguration": {
-          "Enabled": true,
-          "Events": [
-            "DEPLOYMENT_STOP_ON_ALARM",
+        'AutoRollbackConfiguration': {
+          'Enabled': true,
+          'Events': [
+            'DEPLOYMENT_STOP_ON_ALARM',
           ],
         },
       }));

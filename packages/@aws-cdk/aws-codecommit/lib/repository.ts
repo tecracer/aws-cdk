@@ -1,5 +1,7 @@
-import events = require('@aws-cdk/aws-events');
-import { Construct, IConstruct, IResource, Resource, Stack } from '@aws-cdk/core';
+import * as events from '@aws-cdk/aws-events';
+import * as iam from '@aws-cdk/aws-iam';
+import { IResource, Lazy, Resource, Stack } from '@aws-cdk/core';
+import { Construct } from 'constructs';
 import { CfnRepository } from './codecommit.generated';
 
 export interface IRepository extends IResource {
@@ -26,6 +28,18 @@ export interface IRepository extends IResource {
    * @attribute
    */
   readonly repositoryCloneUrlSsh: string;
+
+  /**
+   * The HTTPS (GRC) clone URL
+   *
+   * HTTPS (GRC) is the protocol to use with git-remote-codecommit (GRC).
+   *
+   * It is the recommended method for supporting connections made with federated
+   * access, identity providers, and temporary credentials.
+   *
+   * @see https://docs.aws.amazon.com/codecommit/latest/userguide/setting-up-git-remote-codecommit.html
+   */
+  readonly repositoryCloneUrlGrc: string;
 
   /**
    * Defines a CloudWatch event rule which triggers for repository events. Use
@@ -76,6 +90,26 @@ export interface IRepository extends IResource {
    * Defines a CloudWatch event rule which triggers when a commit is pushed to a branch.
    */
   onCommit(id: string, options?: OnCommitOptions): events.Rule;
+
+  /**
+   * Grant the given principal identity permissions to perform the actions on this repository
+   */
+  grant(grantee: iam.IGrantable, ...actions: string[]): iam.Grant;
+
+  /**
+   * Grant the given identity permissions to pull this repository.
+   */
+  grantPull(grantee: iam.IGrantable): iam.Grant;
+
+  /**
+   * Grant the given identity permissions to pull and push this repository.
+   */
+  grantPullPush(grantee: iam.IGrantable): iam.Grant;
+
+  /**
+   * Grant the given identity permissions to read this repository.
+   */
+  grantRead(grantee: iam.IGrantable): iam.Grant;
 }
 
 /**
@@ -113,6 +147,8 @@ abstract class RepositoryBase extends Resource implements IRepository {
   /** The SSH clone URL */
   public abstract readonly repositoryCloneUrlSsh: string;
 
+  public abstract readonly repositoryCloneUrlGrc: string;
+
   /**
    * Defines a CloudWatch event rule which triggers for repository events. Use
    * `rule.addEventPattern(pattern)` to specify a filter.
@@ -120,8 +156,8 @@ abstract class RepositoryBase extends Resource implements IRepository {
   public onEvent(id: string, options: events.OnEventOptions = {}) {
     const rule = new events.Rule(this, id, options);
     rule.addEventPattern({
-      source: [ 'aws.codecommit' ],
-      resources: [ this.repositoryArn ]
+      source: ['aws.codecommit'],
+      resources: [this.repositoryArn],
     });
     rule.addTarget(options.target);
     return rule;
@@ -134,7 +170,7 @@ abstract class RepositoryBase extends Resource implements IRepository {
   public onStateChange(id: string, options: events.OnEventOptions = {}) {
     const rule = this.onEvent(id, options);
     rule.addEventPattern({
-      detailType: [ 'CodeCommit Repository State Change' ],
+      detailType: ['CodeCommit Repository State Change'],
     });
     return rule;
   }
@@ -145,7 +181,7 @@ abstract class RepositoryBase extends Resource implements IRepository {
    */
   public onReferenceCreated(id: string, options: events.OnEventOptions = {}) {
     const rule = this.onStateChange(id, options);
-    rule.addEventPattern({ detail: { event: [ 'referenceCreated' ] } });
+    rule.addEventPattern({ detail: { event: ['referenceCreated'] } });
     return rule;
   }
 
@@ -155,7 +191,7 @@ abstract class RepositoryBase extends Resource implements IRepository {
    */
   public onReferenceUpdated(id: string, options: events.OnEventOptions = {}) {
     const rule = this.onStateChange(id, options);
-    rule.addEventPattern({ detail: { event: [ 'referenceCreated', 'referenceUpdated' ] } });
+    rule.addEventPattern({ detail: { event: ['referenceCreated', 'referenceUpdated'] } });
     return rule;
   }
 
@@ -165,7 +201,7 @@ abstract class RepositoryBase extends Resource implements IRepository {
    */
   public onReferenceDeleted(id: string, options: events.OnEventOptions = {}) {
     const rule = this.onStateChange(id, options);
-    rule.addEventPattern({ detail: { event: [ 'referenceDeleted' ] } });
+    rule.addEventPattern({ detail: { event: ['referenceDeleted'] } });
     return rule;
   }
 
@@ -174,7 +210,7 @@ abstract class RepositoryBase extends Resource implements IRepository {
    */
   public onPullRequestStateChange(id: string, options: events.OnEventOptions = {}) {
     const rule = this.onEvent(id, options);
-    rule.addEventPattern({ detailType: [ 'CodeCommit Pull Request State Change' ] });
+    rule.addEventPattern({ detailType: ['CodeCommit Pull Request State Change'] });
     return rule;
   }
 
@@ -183,7 +219,7 @@ abstract class RepositoryBase extends Resource implements IRepository {
    */
   public onCommentOnPullRequest(id: string, options: events.OnEventOptions = {}) {
     const rule = this.onEvent(id, options);
-    rule.addEventPattern({ detailType: [ 'CodeCommit Comment on Pull Request' ] });
+    rule.addEventPattern({ detailType: ['CodeCommit Comment on Pull Request'] });
     return rule;
   }
 
@@ -192,7 +228,7 @@ abstract class RepositoryBase extends Resource implements IRepository {
    */
   public onCommentOnCommit(id: string, options: events.OnEventOptions = {}) {
     const rule = this.onEvent(id, options);
-    rule.addEventPattern({ detailType: [ 'CodeCommit Comment on Commit' ] });
+    rule.addEventPattern({ detailType: ['CodeCommit Comment on Commit'] });
     return rule;
   }
 
@@ -202,9 +238,35 @@ abstract class RepositoryBase extends Resource implements IRepository {
   public onCommit(id: string, options: OnCommitOptions = {}) {
     const rule = this.onReferenceUpdated(id, options);
     if (options.branches) {
-      rule.addEventPattern({ detail: { referenceName: options.branches }});
+      rule.addEventPattern({ detail: { referenceName: options.branches } });
     }
     return rule;
+  }
+
+  public grant(grantee: iam.IGrantable, ...actions: string[]) {
+    return iam.Grant.addToPrincipal({
+      grantee,
+      actions,
+      resourceArns: [this.repositoryArn],
+    });
+  }
+
+  public grantPull(grantee: iam.IGrantable) {
+    return this.grant(grantee, 'codecommit:GitPull');
+  }
+
+  public grantPullPush(grantee: iam.IGrantable) {
+    this.grantPull(grantee);
+    return this.grant(grantee, 'codecommit:GitPush');
+  }
+
+  public grantRead(grantee: iam.IGrantable) {
+    this.grantPull(grantee);
+    return this.grant(grantee,
+      'codecommit:EvaluatePullRequestApprovalRules',
+      'codecommit:Get*',
+      'codecommit:Describe*',
+    );
   }
 }
 
@@ -236,16 +298,22 @@ export class Repository extends RepositoryBase {
    */
   public static fromRepositoryArn(scope: Construct, id: string, repositoryArn: string): IRepository {
     const stack = Stack.of(scope);
-    const repositoryName = stack.parseArn(repositoryArn).resource;
+    const arn = stack.parseArn(repositoryArn);
+    const repositoryName = arn.resource;
+    const region = arn.region;
 
     class Import extends RepositoryBase {
       public readonly repositoryArn = repositoryArn;
       public readonly repositoryName = repositoryName;
-      public readonly repositoryCloneUrlHttp = Repository.makeCloneUrl(stack, repositoryName, 'https');
-      public readonly repositoryCloneUrlSsh = Repository.makeCloneUrl(stack, repositoryName, 'ssh');
+      public readonly repositoryCloneUrlHttp = makeCloneUrl(stack, repositoryName, 'https', region);
+      public readonly repositoryCloneUrlSsh = makeCloneUrl(stack, repositoryName, 'ssh', region);
+      public readonly repositoryCloneUrlGrc = makeCloneUrl(stack, repositoryName, 'grc', region);
     }
 
-    return new Import(scope, id);
+    return new Import(scope, id, {
+      account: arn.account,
+      region,
+    });
   }
 
   public static fromRepositoryName(scope: Construct, id: string, repositoryName: string): IRepository {
@@ -253,28 +321,23 @@ export class Repository extends RepositoryBase {
 
     class Import extends RepositoryBase {
       public repositoryName = repositoryName;
-      public repositoryArn = Repository.arnForLocalRepository(repositoryName, scope);
-      public readonly repositoryCloneUrlHttp = Repository.makeCloneUrl(stack, repositoryName, 'https');
-      public readonly repositoryCloneUrlSsh = Repository.makeCloneUrl(stack, repositoryName, 'ssh');
+      public repositoryArn = Stack.of(scope).formatArn({
+        service: 'codecommit',
+        resource: repositoryName,
+      });
+      public readonly repositoryCloneUrlHttp = makeCloneUrl(stack, repositoryName, 'https');
+      public readonly repositoryCloneUrlSsh = makeCloneUrl(stack, repositoryName, 'ssh');
+      public readonly repositoryCloneUrlGrc = makeCloneUrl(stack, repositoryName, 'grc');
     }
 
     return new Import(scope, id);
   }
 
-  private static makeCloneUrl(stack: Stack, repositoryName: string, protocol: 'https' | 'ssh') {
-    return `${protocol}://git-codecommit.${stack.region}.${stack.urlSuffix}/v1/repos/${repositoryName}`;
-  }
-
-  private static arnForLocalRepository(repositoryName: string, scope: IConstruct): string {
-    return Stack.of(scope).formatArn({
-      service: 'codecommit',
-      resource: repositoryName,
-    });
-  }
-
   public readonly repositoryArn: string;
   public readonly repositoryName: string;
-  private readonly repository: CfnRepository;
+  public readonly repositoryCloneUrlHttp: string;
+  public readonly repositoryCloneUrlSsh: string;
+  public readonly repositoryCloneUrlGrc: string;
   private readonly triggers = new Array<CfnRepository.RepositoryTriggerProperty>();
 
   constructor(scope: Construct, id: string, props: RepositoryProps) {
@@ -282,25 +345,20 @@ export class Repository extends RepositoryBase {
       physicalName: props.repositoryName,
     });
 
-    this.repository = new CfnRepository(this, 'Resource', {
+    const repository = new CfnRepository(this, 'Resource', {
       repositoryName: props.repositoryName,
       repositoryDescription: props.description,
-      triggers: this.triggers
+      triggers: Lazy.any({ produce: () => this.triggers }, { omitEmptyArray: true }),
     });
 
-    this.repositoryName = this.getResourceNameAttribute(this.repository.attrName);
-    this.repositoryArn = this.getResourceArnAttribute(this.repository.attrArn, {
+    this.repositoryName = this.getResourceNameAttribute(repository.attrName);
+    this.repositoryArn = this.getResourceArnAttribute(repository.attrArn, {
       service: 'codecommit',
       resource: this.physicalName,
     });
-  }
-
-  public get repositoryCloneUrlHttp() {
-    return this.repository.attrCloneUrlHttp;
-  }
-
-  public get repositoryCloneUrlSsh() {
-    return this.repository.attrCloneUrlSsh;
+    this.repositoryCloneUrlHttp = repository.attrCloneUrlHttp;
+    this.repositoryCloneUrlSsh = repository.attrCloneUrlSsh;
+    this.repositoryCloneUrlGrc = makeCloneUrl(Stack.of(this), this.repositoryName, 'grc');
   }
 
   /**
@@ -342,9 +400,9 @@ export class Repository extends RepositoryBase {
  * Creates for a repository trigger to an SNS topic or Lambda function.
  */
 export interface RepositoryTriggerOptions {
-   /**
-    * A name for the trigger.Triggers on a repository must have unique names
-    */
+  /**
+   * A name for the trigger.Triggers on a repository must have unique names
+   */
   readonly name?: string;
 
   /**
@@ -376,4 +434,17 @@ export enum RepositoryEventTrigger {
   UPDATE_REF = 'updateReference',
   CREATE_REF = 'createReference',
   DELETE_REF = 'deleteReference'
+}
+
+/**
+ * Returns the clone URL for a protocol
+ */
+function makeCloneUrl(stack: Stack, repositoryName: string, protocol: 'https' | 'ssh' | 'grc', region?: string) {
+  switch (protocol) {
+    case 'https':
+    case 'ssh':
+      return `${protocol}://git-codecommit.${region ?? stack.region}.${stack.urlSuffix}/v1/repos/${repositoryName}`;
+    case 'grc':
+      return `codecommit::${region ?? stack.region}://${repositoryName}`;
+  }
 }

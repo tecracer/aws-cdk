@@ -1,7 +1,10 @@
-import ecr = require('@aws-cdk/aws-ecr');
-import cdk = require('@aws-cdk/core');
+import * as ecr from '@aws-cdk/aws-ecr';
 import { ContainerDefinition } from './container-definition';
 import { CfnTaskDefinition } from './ecs.generated';
+
+// v2 - keep this import as a separate section to reduce merge conflict when forward merging with the v2 branch.
+// eslint-disable-next-line
+import { Construct as CoreConstruct } from '@aws-cdk/core';
 
 /**
  * Constructs for types of container images
@@ -22,7 +25,10 @@ export abstract class ContainerImage {
   }
 
   /**
-   * Reference an image that's constructed directly from sources on disk
+   * Reference an image that's constructed directly from sources on disk.
+   *
+   * If you already have a `DockerImageAsset` instance, you can use the
+   * `ContainerImage.fromDockerImageAsset` method instead.
    *
    * @param directory The directory containing the Dockerfile
    */
@@ -31,9 +37,25 @@ export abstract class ContainerImage {
   }
 
   /**
+   * Use an existing `DockerImageAsset` for this container image.
+   *
+   * @param asset The `DockerImageAsset` to use for this container definition.
+   */
+  public static fromDockerImageAsset(asset: DockerImageAsset): ContainerImage {
+    return {
+      bind(_scope: CoreConstruct, containerDefinition: ContainerDefinition): ContainerImageConfig {
+        asset.repository.grantPull(containerDefinition.taskDefinition.obtainExecutionRole());
+        return {
+          imageName: asset.imageUri,
+        };
+      },
+    };
+  }
+
+  /**
    * Called when the image is used by a ContainerDefinition
    */
-  public abstract bind(scope: cdk.Construct, containerDefinition: ContainerDefinition): ContainerImageConfig;
+  public abstract bind(scope: CoreConstruct, containerDefinition: ContainerDefinition): ContainerImageConfig;
 }
 
 /**
@@ -51,6 +73,7 @@ export interface ContainerImageConfig {
   readonly repositoryCredentials?: CfnTaskDefinition.RepositoryCredentialsProperty;
 }
 
+import { DockerImageAsset } from '@aws-cdk/aws-ecr-assets';
 import { AssetImage, AssetImageProps } from './images/asset-image';
 import { EcrImage } from './images/ecr';
 import { RepositoryImage, RepositoryImageProps } from './images/repository';

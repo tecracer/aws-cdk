@@ -1,39 +1,46 @@
-## Continuous Integration / Continuous Delivery for CDK Applications
+# Continuous Integration / Continuous Delivery for CDK Applications
 <!--BEGIN STABILITY BANNER-->
 
 ---
 
-![Stability: Experimental](https://img.shields.io/badge/stability-Experimental-important.svg?style=for-the-badge)
+![Deprecated](https://img.shields.io/badge/deprecated-critical.svg?style=for-the-badge)
 
-> **This is a _developer preview_ (public beta) module. Releases might lack important features and might have
-> future breaking changes.**
->
-> This API is still under active development and subject to non-backward
-> compatible changes or removal in any future version. Use of the API is not recommended in production
-> environments. Experimental APIs are not subject to the Semantic Versioning model.
+> This API may emit warnings. Backward compatibility is not guaranteed.
 
 ---
+
 <!--END STABILITY BANNER-->
 
 This library includes a *CodePipeline* composite Action for deploying AWS CDK Applications.
 
 This module is part of the [AWS Cloud Development Kit](https://github.com/aws/aws-cdk) project.
 
-### Limitations
+
+## Replacement recommended
+
+This library has been deprecated. We recommend you use the
+[@aws-cdk/pipelines](https://docs.aws.amazon.com/cdk/api/latest/docs/pipelines-readme.html) module instead.
+
+
+## Limitations
+
 The construct library in it's current form has the following limitations:
+
 1. It can only deploy stacks that are hosted in the same AWS account and region as the *CodePipeline* is.
 2. Stacks that make use of `Asset`s cannot be deployed successfully.
 
-### Getting Started
+## Getting Started
+
 In order to add the `PipelineDeployStackAction` to your *CodePipeline*, you need to have a *CodePipeline* artifact that
 contains the result of invoking `cdk synth -o <dir>` on your *CDK App*. You can for example achieve this using a
 *CodeBuild* project.
 
 The example below defines a *CDK App* that contains 3 stacks:
+
 * `CodePipelineStack` manages the *CodePipeline* resources, and self-updates before deploying any other stack
 * `ServiceStackA` and `ServiceStackB` are service infrastructure stacks, and need to be deployed in this order
 
-```
+```plaintext
   ┏━━━━━━━━━━━━━━━━┓  ┏━━━━━━━━━━━━━━━━┓  ┏━━━━━━━━━━━━━━━━━┓  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
   ┃     Source     ┃  ┃     Build      ┃  ┃  Self-Update    ┃  ┃             Deploy              ┃
   ┃                ┃  ┃                ┃  ┃                 ┃  ┃                                 ┃
@@ -44,14 +51,14 @@ The example below defines a *CDK App* that contains 3 stacks:
   ┗━━━━━━━━━━━━━━━━┛  ┗━━━━━━━━━━━━━━━━┛  ┗━━━━━━━━━━━━━━━━━┛  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ```
 
-#### `index.ts`
+### `index.ts`
 
-```typescript
-import codebuild = require('@aws-cdk/aws-codebuild');
-import codepipeline = require('@aws-cdk/aws-codepipeline');
-import codepipeline_actions = require('@aws-cdk/aws-codepipeline-actions');
-import cdk = require('@aws-cdk/core');
-import cicd = require('@aws-cdk/app-delivery');
+```ts
+import * as codebuild from '@aws-cdk/aws-codebuild';
+import * as codepipeline from '@aws-cdk/aws-codepipeline';
+import * as codepipeline_actions from '@aws-cdk/aws-codepipeline-actions';
+import * as cdk from '@aws-cdk/core';
+import * as cicd from '@aws-cdk/app-delivery';
 
 const app = new cdk.App();
 
@@ -137,7 +144,8 @@ deployStage.addAction(new cicd.PipelineDeployStackAction({
 }));
 ```
 
-#### `buildspec.yml`
+### `buildspec.yml`
+
 The repository can contain a file at the root level named `buildspec.yml`, or
 you can in-line the buildspec. Note that `buildspec.yaml` is not compatible.
 

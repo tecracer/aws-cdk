@@ -1,11 +1,11 @@
-import { expect, haveResource } from '@aws-cdk/assert';
-import s3 = require('@aws-cdk/aws-s3');
-import cdk = require('@aws-cdk/core');
+import { expect, haveResource } from '@aws-cdk/assert-internal';
+import * as s3 from '@aws-cdk/aws-s3';
+import * as cdk from '@aws-cdk/core';
 import { Test } from 'nodeunit';
-import sources = require('../lib');
+import * as sources from '../lib';
 import { TestFunction } from './test-function';
 
-// tslint:disable:object-literal-key-quotes
+/* eslint-disable quote-props */
 
 export = {
   'sufficiently complex example'(test: Test) {
@@ -16,70 +16,70 @@ export = {
 
     // WHEN
     fn.addEventSource(new sources.S3EventSource(bucket, {
-      events: [ s3.EventType.OBJECT_CREATED, s3.EventType.OBJECT_REMOVED ],
+      events: [s3.EventType.OBJECT_CREATED, s3.EventType.OBJECT_REMOVED],
       filters: [
         { prefix: 'prefix/' },
-        { suffix: '.png' }
-      ]
+        { suffix: '.png' },
+      ],
     }));
 
     // THEN
     expect(stack).to(haveResource('Custom::S3BucketNotifications', {
-      "NotificationConfiguration": {
-        "LambdaFunctionConfigurations": [
+      'NotificationConfiguration': {
+        'LambdaFunctionConfigurations': [
           {
-            "Events": [
-              "s3:ObjectCreated:*"
+            'Events': [
+              's3:ObjectCreated:*',
             ],
-            "Filter": {
-              "Key": {
-                "FilterRules": [
+            'Filter': {
+              'Key': {
+                'FilterRules': [
                   {
-                    "Name": "prefix",
-                    "Value": "prefix/"
+                    'Name': 'prefix',
+                    'Value': 'prefix/',
                   },
                   {
-                    "Name": "suffix",
-                    "Value": ".png"
-                  }
-                ]
-              }
+                    'Name': 'suffix',
+                    'Value': '.png',
+                  },
+                ],
+              },
             },
-            "LambdaFunctionArn": {
-              "Fn::GetAtt": [
-                "Fn9270CBC0",
-                "Arn"
-              ]
-            }
+            'LambdaFunctionArn': {
+              'Fn::GetAtt': [
+                'Fn9270CBC0',
+                'Arn',
+              ],
+            },
           },
           {
-            "Events": [
-              "s3:ObjectRemoved:*"
+            'Events': [
+              's3:ObjectRemoved:*',
             ],
-            "Filter": {
-              "Key": {
-                "FilterRules": [
+            'Filter': {
+              'Key': {
+                'FilterRules': [
                   {
-                    "Name": "prefix",
-                    "Value": "prefix/"
+                    'Name': 'prefix',
+                    'Value': 'prefix/',
                   },
                   {
-                    "Name": "suffix",
-                    "Value": ".png"
-                  }
-                ]
-              }
+                    'Name': 'suffix',
+                    'Value': '.png',
+                  },
+                ],
+              },
             },
-            "LambdaFunctionArn": {
-              "Fn::GetAtt": [
-                "Fn9270CBC0",
-                "Arn"
-              ]
-            }
-          }
-        ]
-      }
+            'LambdaFunctionArn': {
+              'Fn::GetAtt': [
+                'Fn9270CBC0',
+                'Arn',
+              ],
+            },
+          },
+        ],
+      },
     }));
     test.done();
-  }
+  },
 };

@@ -1,7 +1,7 @@
-import { IConstruct } from "./construct";
-import { TokenString } from "./private/encoding";
-import { TokenMap } from "./private/token-map";
-import { TokenizedStringFragments } from "./string-fragments";
+import { IConstruct } from './construct-compat';
+import { TokenString } from './private/encoding';
+import { TokenMap } from './private/token-map';
+import { TokenizedStringFragments } from './string-fragments';
 
 /**
  * Current resolution context for tokens
@@ -13,14 +13,31 @@ export interface IResolveContext {
   readonly scope: IConstruct;
 
   /**
+   * True when we are still preparing, false if we're rendering the final output
+   */
+  readonly preparing: boolean;
+
+  /**
    * Resolve an inner object
    */
-  resolve(x: any): any;
+  resolve(x: any, options?: ResolveChangeContextOptions): any;
 
   /**
    * Use this postprocessor after the entire token structure has been resolved
    */
   registerPostProcessor(postProcessor: IPostProcessor): void;
+}
+
+/**
+ * Options that can be changed while doing a recursive resolve
+ */
+export interface ResolveChangeContextOptions {
+  /**
+   * Change the 'allowIntrinsicKeys' option
+   *
+   * @default - Unchanged
+   */
+  readonly allowIntrinsicKeys?: boolean;
 }
 
 /**
@@ -33,7 +50,8 @@ export interface IResolvable {
    * The creation stack of this resolvable which will be appended to errors
    * thrown during resolution.
    *
-   * If this returns an empty array the stack will not be attached.
+   * This may return an array with a single informational element indicating how
+   * to get this property populated, if it was skipped for performance reasons.
    */
   readonly creationStack: string[];
 
@@ -53,7 +71,7 @@ export interface IResolvable {
 /**
  * A Token that can post-process the complete resolved value, after resolve() has recursed over it
  */
-export interface IPostProcessor  {
+export interface IPostProcessor {
   /**
    * Process the completely resolved value, after full recursion/resolution has happened
    */

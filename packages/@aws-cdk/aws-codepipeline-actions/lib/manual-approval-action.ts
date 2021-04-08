@@ -1,8 +1,11 @@
-import codepipeline = require('@aws-cdk/aws-codepipeline');
-import sns = require('@aws-cdk/aws-sns');
-import subs = require('@aws-cdk/aws-sns-subscriptions');
-import cdk = require('@aws-cdk/core');
+import * as codepipeline from '@aws-cdk/aws-codepipeline';
+import * as sns from '@aws-cdk/aws-sns';
+import * as subs from '@aws-cdk/aws-sns-subscriptions';
 import { Action } from './action';
+
+// keep this import separate from other imports to reduce chance for merge conflicts with v2-main
+// eslint-disable-next-line no-duplicate-imports, import/order
+import { Construct } from '@aws-cdk/core';
 
 /**
  * Construction properties of the {@link ManualApprovalAction}.
@@ -24,6 +27,13 @@ export interface ManualApprovalActionProps extends codepipeline.CommonAwsActionP
    * Any additional information that you want to include in the notification email message.
    */
   readonly additionalInformation?: string;
+
+  /**
+   * URL you want to provide to the reviewer as part of the approval request.
+   *
+   * @default - the approval request will not have an external link
+   */
+  readonly externalEntityLink?: string;
 }
 
 /**
@@ -53,8 +63,8 @@ export class ManualApprovalAction extends Action {
     return this._notificationTopic;
   }
 
-  protected bound(scope: cdk.Construct, _stage: codepipeline.IStage, options: codepipeline.ActionBindOptions):
-      codepipeline.ActionConfig {
+  protected bound(scope: Construct, _stage: codepipeline.IStage, options: codepipeline.ActionBindOptions):
+  codepipeline.ActionConfig {
     if (this.props.notificationTopic) {
       this._notificationTopic = this.props.notificationTopic;
     } else if ((this.props.notifyEmails || []).length > 0) {
@@ -69,12 +79,15 @@ export class ManualApprovalAction extends Action {
     }
 
     return {
-      configuration: this._notificationTopic
-        ? {
-          NotificationArn: this._notificationTopic.topicArn,
-          CustomData: this.props.additionalInformation,
-        }
-        : undefined,
+      configuration: undefinedIfAllValuesAreEmpty({
+        NotificationArn: this._notificationTopic?.topicArn,
+        CustomData: this.props.additionalInformation,
+        ExternalEntityLink: this.props.externalEntityLink,
+      }),
     };
   }
+}
+
+function undefinedIfAllValuesAreEmpty(object: object): object | undefined {
+  return Object.values(object).some(v => v !== undefined) ? object : undefined;
 }

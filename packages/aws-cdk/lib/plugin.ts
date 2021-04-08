@@ -62,8 +62,9 @@ export class PluginHost {
    */
   public load(moduleSpec: string) {
     try {
-      // tslint:disable-next-line:no-var-requires
+      /* eslint-disable @typescript-eslint/no-require-imports */
       const plugin = require(moduleSpec);
+      /* eslint-enable */
       if (!isPlugin(plugin)) {
         error(`Module ${green(moduleSpec)} is not a valid plug-in, or has an unsupported version.`);
         throw new Error(`Module ${moduleSpec} does not define a valid plug-in.`);

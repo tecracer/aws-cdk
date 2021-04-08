@@ -8,13 +8,13 @@ export enum JsonSchemaVersion {
 }
 
 export enum JsonSchemaType {
-  NULL = "null",
-  BOOLEAN = "boolean",
-  OBJECT = "object",
-  ARRAY = "array",
-  NUMBER = "number",
-  INTEGER = "integer",
-  STRING = "string"
+  NULL = 'null',
+  BOOLEAN = 'boolean',
+  OBJECT = 'object',
+  ARRAY = 'array',
+  NUMBER = 'number',
+  INTEGER = 'integer',
+  STRING = 'string'
 }
 
 /**
@@ -35,6 +35,12 @@ export interface JsonSchema {
   readonly title?: string;
   readonly description?: string;
   readonly 'enum'?: any[];
+  /**
+   * The default value if you use an enum.
+   *
+   * @default - not set
+   */
+  readonly default?: any;
   readonly format?: string;
   readonly definitions?: { [name: string]: JsonSchema };
 
@@ -63,9 +69,9 @@ export interface JsonSchema {
   readonly minProperties?: number;
   readonly required?: string[];
   readonly properties?: { [name: string]: JsonSchema };
-  readonly additionalProperties?: JsonSchema;
+  readonly additionalProperties?: JsonSchema | boolean;
   readonly patternProperties?: { [name: string]: JsonSchema };
-  readonly dependencies?: { [name: string]: JsonSchema | string[] };
+  readonly dependencies?: { [name: string]: JsonSchema | string[] };
   readonly propertyNames?: JsonSchema;
 
   // Conditional

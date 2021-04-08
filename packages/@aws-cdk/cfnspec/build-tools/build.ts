@@ -5,17 +5,27 @@
  * document at `spec/specification.json`.
  */
 
-import fastJsonPatch = require('fast-json-patch');
-import fs = require('fs-extra');
-import md5 = require('md5');
-import path = require('path');
+import * as path from 'path';
+import * as fs from 'fs-extra';
+import * as md5 from 'md5';
 import { schema } from '../lib';
-import { detectScrutinyTypes } from './scrutiny';
+import { decorateResourceTypes, forEachSection, massageSpec, merge, normalize, patch } from './massage-spec';
 
 async function main() {
   const inputDir = path.join(process.cwd(), 'spec-source');
-  const files = await fs.readdir(inputDir);
+  const outDir = path.join(process.cwd(), 'spec');
+
+  await generateResourceSpecification(inputDir, path.join(outDir, 'specification.json'));
+  await mergeSpecificationFromDirs(path.join(inputDir, 'cfn-lint'), path.join(outDir, 'cfn-lint.json'));
+}
+
+/**
+ * Generate CloudFormation resource specification from sources and patches
+ */
+async function generateResourceSpecification(inputDir: string, outFile: string) {
   const spec: schema.Specification = { PropertyTypes: {}, ResourceTypes: {}, Fingerprint: '' };
+
+  const files = await fs.readdir(inputDir);
   for (const file of files.filter(n => n.endsWith('.json')).sort()) {
     const data = await fs.readJson(path.join(inputDir, file));
     if (file.indexOf('patch') === -1) {
@@ -26,91 +36,58 @@ async function main() {
     }
   }
 
-  detectScrutinyTypes(spec);
+  massageSpec(spec);
 
   spec.Fingerprint = md5(JSON.stringify(normalize(spec)));
 
-  const outDir = path.join(process.cwd(), 'spec');
-  await fs.mkdirp(outDir);
-  await fs.writeJson(path.join(outDir, 'specification.json'), spec, { spaces: 2 });
-}
-
-function forEachSection(spec: schema.Specification, data: any, cb: (spec: any, fragment: any, path: string[]) => void) {
-  cb(spec.PropertyTypes, data.PropertyTypes, ['PropertyTypes']);
-  cb(spec.ResourceTypes, data.ResourceTypes, ['ResourceTypes']);
-  // Per-resource specs are keyed on ResourceType (singular), but we want it in ResourceTypes (plural)
-  cb(spec.ResourceTypes, data.ResourceType, ['ResourceType']);
-}
-
-function decorateResourceTypes(data: any) {
-  const requiredTransform = data.ResourceSpecificationTransform as string | undefined;
-  if (!requiredTransform) { return; }
-  const resourceTypes = data.ResourceTypes || data.ResourceType;
-  for (const name of Object.keys(resourceTypes)) {
-    resourceTypes[name].RequiredTransform = requiredTransform;
-  }
-}
-
-function merge(spec: any, fragment: any, jsonPath: string[]) {
-  if (!fragment) { return; }
-  for (const key of Object.keys(fragment)) {
-    if (key in spec) {
-      const specVal = spec[key];
-      const fragVal = fragment[key];
-      if (typeof specVal !== typeof fragVal) {
-        // tslint:disable-next-line:max-line-length
-        throw new Error(`Attempted to merge ${JSON.stringify(fragVal)} into incompatible ${JSON.stringify(specVal)} at path ${jsonPath.join('/')}/${key}`);
-      }
-      if (typeof specVal !== 'object') {
-        // tslint:disable-next-line:max-line-length
-        throw new Error(`Conflict when attempting to merge ${JSON.stringify(fragVal)} into ${JSON.stringify(specVal)} at path ${jsonPath.join('/')}/${key}`);
-      }
-      merge(specVal, fragVal, [...jsonPath, key]);
-    } else {
-      spec[key] = fragment[key];
-    }
-  }
-}
-
-function patch(spec: any, fragment: any) {
-  if (!fragment) { return; }
-  if ('patch' in fragment) {
-    // tslint:disable-next-line:no-console
-    console.log(`Applying patch: ${fragment.patch.description}`);
-    fastJsonPatch.applyPatch(spec, fragment.patch.operations);
-  } else {
-    for (const key of Object.keys(fragment)) {
-      patch(spec[key], fragment[key]);
-    }
-  }
+  await fs.mkdirp(path.dirname(outFile));
+  await fs.writeJson(outFile, spec, { spaces: 2 });
 }
 
 /**
- * Modifies the provided specification so that ``ResourceTypes`` and ``PropertyTypes`` are listed in alphabetical order.
- *
- * @param spec an AWS CloudFormation Resource Specification document.
- *
- * @returns ``spec``, after having sorted the ``ResourceTypes`` and ``PropertyTypes`` sections alphabetically.
+ * Generate Cfnlint spec annotations from sources and patches
  */
-function normalize(spec: schema.Specification): schema.Specification {
-  spec.ResourceTypes = normalizeSection(spec.ResourceTypes);
-  if (spec.PropertyTypes) {
-    spec.PropertyTypes = normalizeSection(spec.PropertyTypes);
-  }
-  return spec;
+async function mergeSpecificationFromDirs(inputDir: string, outFile: string) {
+  const spec: any = {};
 
-  function normalizeSection<T>(section: { [name: string]: T }): { [name: string]: T } {
-    const result: { [name: string]: T } = {};
-    for (const key of Object.keys(section).sort()) {
-      result[key] = section[key];
-    }
-    return result;
+  for (const child of await fs.readdir(inputDir)) {
+    const fullPath = path.join(inputDir, child);
+    if (!(await fs.stat(fullPath)).isDirectory()) { continue; }
+
+    const subspec = await loadMergedSpec(fullPath);
+    spec[child] = subspec;
   }
+
+  await fs.mkdirp(path.dirname(outFile));
+  await fs.writeJson(outFile, spec, { spaces: 2 });
+}
+
+/**
+ * Load all files in the given directory, merge them and apply patches in the order found
+ *
+ * The base structure is always an empty object
+ */
+async function loadMergedSpec(inputDir: string) {
+  const structure: any = {};
+
+  const files = await fs.readdir(inputDir);
+  for (const file of files.filter(n => n.endsWith('.json')).sort()) {
+    const data = await fs.readJson(path.join(inputDir, file));
+    if (file.indexOf('patch') === -1) {
+      // Copy properties from current object into structure, adding/overwriting whatever is found
+      Object.assign(structure, data);
+    } else {
+      // Apply the loaded file as a patch onto the current structure
+      patch(structure, data);
+    }
+  }
+
+  return structure;
 }
 
 main()
   .catch(e => {
-    // tslint:disable-next-line:no-console
+    // eslint-disable-next-line no-console
     console.error(e.stack);
     process.exit(-1);
   });

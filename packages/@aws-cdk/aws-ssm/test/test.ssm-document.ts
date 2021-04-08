@@ -1,7 +1,7 @@
-import { expect, haveResource } from '@aws-cdk/assert';
-import cdk = require('@aws-cdk/core');
+import { expect, haveResource } from '@aws-cdk/assert-internal';
+import * as cdk from '@aws-cdk/core';
 import { Test } from 'nodeunit';
-import ssm = require('../lib');
+import * as ssm from '../lib';
 
 export = {
   'association name is rendered properly in L1 construct'(test: Test) {
@@ -11,12 +11,20 @@ export = {
     // WHEN
     new ssm.CfnAssociation(stack, 'Assoc', {
       name: 'document',
+      parameters: {
+        a: ['a'],
+        B: [],
+      },
     });
 
     // THEN
     expect(stack).to(haveResource('AWS::SSM::Association', {
       Name: 'document',
+      Parameters: {
+        a: ['a'],
+        B: [],
+      },
     }));
     test.done();
-  }
+  },
 };

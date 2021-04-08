@@ -92,8 +92,8 @@
           "Status": "Enabled"
         }
       },
-      "DeletionPolicy": "Delete",
-      "UpdateReplacePolicy": "Delete"
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
     },
     "PipelineRoleD68726F7": {
       "Type": "AWS::IAM::Role",
@@ -104,17 +104,7 @@
               "Action": "sts:AssumeRole",
               "Effect": "Allow",
               "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "codepipeline.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
+                "Service": "codepipeline.amazonaws.com"
               }
             }
           ],
@@ -133,7 +123,7 @@
                 "s3:GetBucket*",
                 "s3:List*",
                 "s3:DeleteObject*",
-                "s3:PutObject*",
+                "s3:PutObject",
                 "s3:Abort*"
               ],
               "Effect": "Allow",
@@ -216,7 +206,6 @@
                   },
                   "S3ObjectKey": "application.zip"
                 },
-                "InputArtifacts": [],
                 "Name": "S3Source",
                 "OutputArtifacts": [
                   {
@@ -257,7 +246,6 @@
                   }
                 ],
                 "Name": "CodeDeploy",
-                "OutputArtifacts": [],
                 "RoleArn": {
                   "Fn::GetAtt": [
                     "PipelineDeployCodeDeployCodePipelineActionRoleFA7F8EEF",
@@ -352,7 +340,7 @@
             {
               "Action": [
                 "s3:DeleteObject*",
-                "s3:PutObject*",
+                "s3:PutObject",
                 "s3:Abort*"
               ],
               "Effect": "Allow",

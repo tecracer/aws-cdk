@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import apig = require('@aws-cdk/aws-apigateway');
-import acm = require('@aws-cdk/aws-certificatemanager');
-import lambda = require('@aws-cdk/aws-lambda');
-import route53 = require('@aws-cdk/aws-route53');
-import { App, Construct, Stack } from '@aws-cdk/core';
-import targets = require('../lib');
+import * as apig from '@aws-cdk/aws-apigateway';
+import * as acm from '@aws-cdk/aws-certificatemanager';
+import * as lambda from '@aws-cdk/aws-lambda';
+import * as route53 from '@aws-cdk/aws-route53';
+import { App, Stack } from '@aws-cdk/core';
+import { Construct } from 'constructs';
+import * as targets from '../lib';
 
 class TestStack extends Stack {
   constructor(scope: Construct, id: string) {
@@ -15,14 +16,14 @@ class TestStack extends Stack {
     const hostedZoneId = 'AAAAAAAAAAAAA';
 
     const handler = new lambda.Function(this, 'Handler', {
-      code: lambda.Code.inline(`exports.handler = async () => {
+      code: lambda.Code.fromInline(`exports.handler = async () => {
         return {
           statusCode: '200',
           body: 'hello, world!'
         };
       };`),
-      runtime: lambda.Runtime.NODEJS_8_10,
-      handler: 'index.handler'
+      runtime: lambda.Runtime.NODEJS_10_X,
+      handler: 'index.handler',
     });
 
     const certificate = acm.Certificate.fromCertificateArn(this, 'cert', certArn);
@@ -33,17 +34,17 @@ class TestStack extends Stack {
         certificate,
         domainName,
         endpointType: apig.EndpointType.REGIONAL,
-      }
+      },
     });
 
     const zone = route53.HostedZone.fromHostedZoneAttributes(this, 'hosted-zone', {
       zoneName: domainName,
-      hostedZoneId
+      hostedZoneId,
     });
 
     new route53.ARecord(this, 'Alias', {
       zone,
-      target: route53.AddressRecordTarget.fromAlias(new targets.ApiGateway(api))
+      target: route53.RecordTarget.fromAlias(new targets.ApiGateway(api)),
     });
   }
 }

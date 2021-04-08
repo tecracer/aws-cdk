@@ -1,7 +1,13 @@
-import ec2 = require('@aws-cdk/aws-ec2');
-import { Construct, IResource, Lazy, Resource } from '@aws-cdk/core';
+import * as ec2 from '@aws-cdk/aws-ec2';
+import * as iam from '@aws-cdk/aws-iam';
+import * as s3 from '@aws-cdk/aws-s3';
+import * as cxschema from '@aws-cdk/cloud-assembly-schema';
+import { ContextProvider, IResource, Lazy, Resource, Stack, Token } from '@aws-cdk/core';
+import * as cxapi from '@aws-cdk/cx-api';
+import { RegionInfo } from '@aws-cdk/region-info';
+import { Construct } from 'constructs';
 import { CfnLoadBalancer } from '../elasticloadbalancingv2.generated';
-import { Attributes, ifUndefined, renderAttributes } from './util';
+import { Attributes, ifUndefined, mapTagMapToCxschema, renderAttributes } from './util';
 
 /**
  * Shared properties of both Application and Network Load Balancers
@@ -27,9 +33,10 @@ export interface BaseLoadBalancerProps {
   readonly internetFacing?: boolean;
 
   /**
-   * Where in the VPC to place the load balancer
+   * Which subnets place the load balancer in
    *
-   * @default - Public subnets if internetFacing, otherwise private subnets.
+   * @default - the Vpc default strategy.
+   *
    */
   readonly vpcSubnets?: ec2.SubnetSelection;
 
@@ -45,18 +52,51 @@ export interface ILoadBalancerV2 extends IResource {
   /**
    * The canonical hosted zone ID of this load balancer
    *
-   * @example Z2P70J7EXAMPLE
    * @attribute
+   * @example Z2P70J7EXAMPLE
    */
   readonly loadBalancerCanonicalHostedZoneId: string;
 
   /**
    * The DNS name of this load balancer
    *
-   * @example my-load-balancer-424835706.us-west-2.elb.amazonaws.com
    * @attribute
+   * @example my-load-balancer-424835706.us-west-2.elb.amazonaws.com
    */
   readonly loadBalancerDnsName: string;
+}
+
+/**
+ * Options for looking up load balancers
+ */
+export interface BaseLoadBalancerLookupOptions {
+  /**
+   * Find by load balancer's ARN
+   * @default - does not search by load balancer arn
+   */
+  readonly loadBalancerArn?: string;
+
+  /**
+   * Match load balancer tags.
+   * @default - does not match load balancers by tags
+   */
+  readonly loadBalancerTags?: Record<string, string>;
+}
+
+/**
+ * Options for query context provider
+ * @internal
+ */
+export interface LoadBalancerQueryContextProviderOptions {
+  /**
+   * User's lookup options
+   */
+  readonly userOptions: BaseLoadBalancerLookupOptions;
+
+  /**
+   * Type of load balancer
+   */
+  readonly loadBalancerType: cxschema.LoadBalancerType;
 }
 
 /**
@@ -64,42 +104,77 @@ export interface ILoadBalancerV2 extends IResource {
  */
 export abstract class BaseLoadBalancer extends Resource {
   /**
+   * Queries the load balancer context provider for load balancer info.
+   * @internal
+   */
+  protected static _queryContextProvider(scope: Construct, options: LoadBalancerQueryContextProviderOptions) {
+    if (Token.isUnresolved(options.userOptions.loadBalancerArn)
+      || Object.values(options.userOptions.loadBalancerTags ?? {}).some(Token.isUnresolved)) {
+      throw new Error('All arguments to look up a load balancer must be concrete (no Tokens)');
+    }
+
+    let cxschemaTags: cxschema.Tag[] | undefined;
+    if (options.userOptions.loadBalancerTags) {
+      cxschemaTags = mapTagMapToCxschema(options.userOptions.loadBalancerTags);
+    }
+
+    const props: cxapi.LoadBalancerContextResponse = ContextProvider.getValue(scope, {
+      provider: cxschema.ContextProvider.LOAD_BALANCER_PROVIDER,
+      props: {
+        loadBalancerArn: options.userOptions.loadBalancerArn,
+        loadBalancerTags: cxschemaTags,
+        loadBalancerType: options.loadBalancerType,
+      } as cxschema.LoadBalancerContextQuery,
+      dummyValue: {
+        ipAddressType: cxapi.LoadBalancerIpAddressType.DUAL_STACK,
+        loadBalancerArn: `arn:aws:elasticloadbalancing:us-west-2:123456789012:loadbalancer/${options.loadBalancerType}/my-load-balancer/50dc6c495c0c9188`,
+        loadBalancerCanonicalHostedZoneId: 'Z3DZXE0EXAMPLE',
+        loadBalancerDnsName: 'my-load-balancer-1234567890.us-west-2.elb.amazonaws.com',
+        securityGroupIds: ['sg-1234'],
+        vpcId: 'vpc-12345',
+      } as cxapi.LoadBalancerContextResponse,
+    }).value;
+
+    return props;
+  }
+
+  /**
    * The canonical hosted zone ID of this load balancer
    *
-   * @example Z2P70J7EXAMPLE
    * @attribute
+   * @example Z2P70J7EXAMPLE
    */
   public readonly loadBalancerCanonicalHostedZoneId: string;
 
   /**
    * The DNS name of this load balancer
    *
-   * @example my-load-balancer-424835706.us-west-2.elb.amazonaws.com
    * @attribute
+   * @example my-load-balancer-424835706.us-west-2.elb.amazonaws.com
    */
   public readonly loadBalancerDnsName: string;
 
   /**
    * The full name of this load balancer
    *
-   * @example app/my-load-balancer/50dc6c495c0c9188
    * @attribute
+   * @example app/my-load-balancer/50dc6c495c0c9188
    */
   public readonly loadBalancerFullName: string;
 
   /**
    * The name of this load balancer
    *
-   * @example my-load-balancer
    * @attribute
+   * @example my-load-balancer
    */
   public readonly loadBalancerName: string;
 
   /**
    * The ARN of this load balancer
    *
-   * @example arn:aws:elasticloadbalancing:us-west-2:123456789012:loadbalancer/app/my-internal-load-balancer/50dc6c495c0c9188
    * @attribute
+   * @example arn:aws:elasticloadbalancing:us-west-2:123456789012:loadbalancer/app/my-internal-load-balancer/50dc6c495c0c9188
    */
   public readonly loadBalancerArn: string;
 
@@ -109,12 +184,9 @@ export abstract class BaseLoadBalancer extends Resource {
   public readonly loadBalancerSecurityGroups: string[];
 
   /**
-   * The VPC this load balancer has been created in, if available
-   *
-   * If the Load Balancer was imported, the VPC is not available.
+   * The VPC this load balancer has been created in.
    */
-  public readonly vpc?: ec2.IVpc;
-
+  public readonly vpc: ec2.IVpc;
   /**
    * Attributes set on this load balancer
    */
@@ -128,8 +200,7 @@ export abstract class BaseLoadBalancer extends Resource {
     const internetFacing = ifUndefined(baseProps.internetFacing, false);
 
     const vpcSubnets = ifUndefined(baseProps.vpcSubnets,
-      { subnetType: internetFacing ? ec2.SubnetType.PUBLIC : ec2.SubnetType.PRIVATE });
-
+      (internetFacing ? { subnetType: ec2.SubnetType.PUBLIC } : {}) );
     const { subnetIds, internetConnectivityEstablished } = baseProps.vpc.selectSubnets(vpcSubnets);
 
     this.vpc = baseProps.vpc;
@@ -138,14 +209,14 @@ export abstract class BaseLoadBalancer extends Resource {
       name: this.physicalName,
       subnets: subnetIds,
       scheme: internetFacing ? 'internet-facing' : 'internal',
-      loadBalancerAttributes: Lazy.anyValue({ produce: () => renderAttributes(this.attributes) }),
-      ...additionalProps
+      loadBalancerAttributes: Lazy.any({ produce: () => renderAttributes(this.attributes) }, { omitEmptyArray: true } ),
+      ...additionalProps,
     });
     if (internetFacing) {
       resource.node.addDependency(internetConnectivityEstablished);
     }
 
-    if (baseProps.deletionProtection) { this.setAttribute('deletion_protection.enabled', 'true'); }
+    this.setAttribute('deletion_protection.enabled', baseProps.deletionProtection ? 'true' : 'false');
 
     this.loadBalancerCanonicalHostedZoneId = resource.attrCanonicalHostedZoneId;
     this.loadBalancerDnsName = resource.attrDnsName;
@@ -153,6 +224,34 @@ export abstract class BaseLoadBalancer extends Resource {
     this.loadBalancerName = resource.attrLoadBalancerName;
     this.loadBalancerArn = resource.ref;
     this.loadBalancerSecurityGroups = resource.attrSecurityGroups;
+  }
+
+  /**
+   * Enable access logging for this load balancer.
+   *
+   * A region must be specified on the stack containing the load balancer; you cannot enable logging on
+   * environment-agnostic stacks. See https://docs.aws.amazon.com/cdk/latest/guide/environments.html
+   */
+  public logAccessLogs(bucket: s3.IBucket, prefix?: string) {
+    this.setAttribute('access_logs.s3.enabled', 'true');
+    this.setAttribute('access_logs.s3.bucket', bucket.bucketName.toString());
+    this.setAttribute('access_logs.s3.prefix', prefix);
+
+    const region = Stack.of(this).region;
+    if (Token.isUnresolved(region)) {
+      throw new Error('Region is required to enable ELBv2 access logging');
+    }
+
+    const account = RegionInfo.get(region).elbv2Account;
+    if (!account) {
+      throw new Error(`Cannot enable access logging; don't know ELBv2 account for region ${region}`);
+    }
+
+    prefix = prefix || '';
+    bucket.grantPut(new iam.AccountPrincipal(account), `${(prefix ? prefix + '/' : '')}AWSLogs/${Stack.of(this).account}/*`);
+
+    // make sure the bucket's policy is created before the ALB (see https://github.com/aws/aws-cdk/issues/1633)
+    this.node.addDependency(bucket);
   }
 
   /**

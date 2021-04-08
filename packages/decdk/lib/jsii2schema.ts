@@ -1,7 +1,7 @@
-import jsiiReflect = require('jsii-reflect');
-import util = require('util');
+import * as jsiiReflect from 'jsii-reflect';
+import * as util from 'util';
 
-// tslint:disable:no-console
+/* eslint-disable no-console */
 
 export class SchemaContext {
   public static root(definitions?: { [fqn: string]: any }): SchemaContext {
@@ -433,7 +433,7 @@ export function isDataType(t: jsiiReflect.Type | undefined): t is jsiiReflect.In
   if (!t) {
     return false;
   }
-  return t instanceof jsiiReflect.InterfaceType && (t as any).interfaceSpec.datatype;
+  return t instanceof jsiiReflect.InterfaceType && (t as any).spec.datatype;
 }
 
 // Must only have properties, all of which are scalars,
@@ -557,15 +557,15 @@ export function isConstruct(typeOrTypeRef: jsiiReflect.TypeReference | jsiiRefle
     }
   }
 
-  // if it is an interface, it should extend cdk.IConstruct
+  // if it is an interface, it should extend constructs.IConstruct
   if (type instanceof jsiiReflect.InterfaceType) {
-    const constructIface = type.system.findFqn('@aws-cdk/core.IConstruct');
+    const constructIface = type.system.findFqn('constructs.IConstruct');
     return type.extends(constructIface);
   }
 
-  // if it is a class, it should extend cdk.Construct
+  // if it is a class, it should extend constructs.Construct
   if (type instanceof jsiiReflect.ClassType) {
-    const constructClass = type.system.findFqn('@aws-cdk/core.Construct');
+    const constructClass = type.system.findFqn('constructs.Construct');
     return type.extends(constructClass);
   }
 

@@ -1,8 +1,13 @@
-import ec2 = require('@aws-cdk/aws-ec2');
-import cdk = require('@aws-cdk/core');
+import * as ec2 from '@aws-cdk/aws-ec2';
+import * as cdk from '@aws-cdk/core';
+import { Construct } from 'constructs';
 import { CfnTargetGroup } from '../elasticloadbalancingv2.generated';
 import { Protocol, TargetType } from './enums';
 import { Attributes, renderAttributes } from './util';
+
+// keep this import separate from other imports to reduce chance for merge conflicts with v2-main
+// eslint-disable-next-line no-duplicate-imports, import/order
+import { Construct as CoreConstruct } from '@aws-cdk/core';
 
 /**
  * Basic properties of both Application and Network Target Groups
@@ -21,8 +26,12 @@ export interface BaseTargetGroupProps {
 
   /**
    * The virtual private cloud (VPC).
+   *
+   * only if `TargetType` is `Ip` or `InstanceId`
+   *
+   * @default - undefined
    */
-  readonly vpc: ec2.IVpc;
+  readonly vpc?: ec2.IVpc;
 
   /**
    * The amount of time for Elastic Load Balancing to wait before deregistering a target.
@@ -56,6 +65,16 @@ export interface BaseTargetGroupProps {
  * Properties for configuring a health check
  */
 export interface HealthCheck {
+
+  /**
+   * Indicates whether health checks are enabled. If the target type is lambda,
+   * health checks are disabled by default but can be enabled. If the target type
+   * is instance or ip, health checks are always enabled and cannot be disabled.
+   *
+   * @default - Determined automatically.
+   */
+  readonly enabled?: boolean;
+
   /**
    * The approximate number of seconds between health checks for an individual target.
    *
@@ -80,8 +99,8 @@ export interface HealthCheck {
   /**
    * The protocol the load balancer uses when performing health checks on targets.
    *
-   * The TCP protocol is supported only if the protocol of the target group
-   * is TCP.
+   * The TCP protocol is supported for health checks only if the protocol of the target group is TCP, TLS, UDP, or TCP_UDP.
+   * The TLS, UDP, and TCP_UDP protocols are not supported for health checks.
    *
    * @default HTTP for ALBs, TCP for NLBs
    */
@@ -118,6 +137,16 @@ export interface HealthCheck {
   readonly unhealthyThresholdCount?: number;
 
   /**
+   * GRPC code to use when checking for a successful response from a target.
+   *
+   * You can specify values between 0 and 99. You can specify multiple values
+   * (for example, "0,1") or a range of values (for example, "0-5").
+   *
+   * @default - 12
+   */
+  readonly healthyGrpcCodes?: string;
+
+  /**
    * HTTP code to use when checking for a successful response from a target.
    *
    * For Application Load Balancers, you can specify values between 200 and
@@ -130,7 +159,7 @@ export interface HealthCheck {
 /**
  * Define the target of a load balancer
  */
-export abstract class TargetGroupBase extends cdk.Construct implements ITargetGroup {
+export abstract class TargetGroupBase extends CoreConstruct implements ITargetGroup {
   /**
    * The ARN of the target group
    */
@@ -182,6 +211,11 @@ export abstract class TargetGroupBase extends cdk.Construct implements ITargetGr
   protected readonly loadBalancerAttachedDependencies = new cdk.ConcreteDependable();
 
   /**
+   * The types of the directly registered members of this target group
+   */
+  protected targetType?: TargetType;
+
+  /**
    * Attributes of this target group
    */
   private readonly attributes: Attributes = {};
@@ -189,19 +223,21 @@ export abstract class TargetGroupBase extends cdk.Construct implements ITargetGr
   /**
    * The JSON objects returned by the directly registered members of this target group
    */
-  private readonly targetsJson = new Array<any>();
+  private readonly targetsJson = new Array<CfnTargetGroup.TargetDescriptionProperty>();
 
   /**
-   * The types of the directly registered members of this target group
+   * The target group VPC
+   *
+   * @default - Required if adding instances instead of Lambdas to TargetGroup
    */
-  private targetType?: TargetType;
+  private vpc?: ec2.IVpc;
 
   /**
    * The target group resource
    */
   private readonly resource: CfnTargetGroup;
 
-  constructor(scope: cdk.Construct, id: string, baseProps: BaseTargetGroupProps, additionalProps: any) {
+  constructor(scope: Construct, id: string, baseProps: BaseTargetGroupProps, additionalProps: any) {
     super(scope, id);
 
     if (baseProps.deregistrationDelay !== undefined) {
@@ -209,32 +245,37 @@ export abstract class TargetGroupBase extends cdk.Construct implements ITargetGr
     }
 
     this.healthCheck = baseProps.healthCheck || {};
+    this.vpc = baseProps.vpc;
     this.targetType = baseProps.targetType;
 
     this.resource = new CfnTargetGroup(this, 'Resource', {
       name: baseProps.targetGroupName,
-      targetGroupAttributes: cdk.Lazy.anyValue({ produce: () => renderAttributes(this.attributes) }),
-      targetType: cdk.Lazy.stringValue({ produce: () => this.targetType }),
-      targets: cdk.Lazy.anyValue({ produce: () => this.targetsJson }),
-      vpcId: baseProps.vpc.vpcId,
+      targetGroupAttributes: cdk.Lazy.any({ produce: () => renderAttributes(this.attributes) }, { omitEmptyArray: true }),
+      targetType: cdk.Lazy.string({ produce: () => this.targetType }),
+      targets: cdk.Lazy.any({ produce: () => this.targetsJson }, { omitEmptyArray: true }),
+      vpcId: cdk.Lazy.string({ produce: () => this.vpc && this.targetType !== TargetType.LAMBDA ? this.vpc.vpcId : undefined }),
 
       // HEALTH CHECK
-      healthCheckIntervalSeconds: cdk.Lazy.numberValue({
-        produce: () => this.healthCheck && this.healthCheck.interval && this.healthCheck.interval.toSeconds()
+      healthCheckEnabled: cdk.Lazy.any({ produce: () => this.healthCheck?.enabled }),
+      healthCheckIntervalSeconds: cdk.Lazy.number({
+        produce: () => this.healthCheck?.interval?.toSeconds(),
       }),
-      healthCheckPath: cdk.Lazy.stringValue({ produce: () => this.healthCheck && this.healthCheck.path }),
-      healthCheckPort: cdk.Lazy.stringValue({ produce: () => this.healthCheck && this.healthCheck.port }),
-      healthCheckProtocol: cdk.Lazy.stringValue({ produce: () => this.healthCheck && this.healthCheck.protocol }),
-      healthCheckTimeoutSeconds: cdk.Lazy.numberValue({
-        produce: () => this.healthCheck && this.healthCheck.timeout && this.healthCheck.timeout.toSeconds()
+      healthCheckPath: cdk.Lazy.string({ produce: () => this.healthCheck?.path }),
+      healthCheckPort: cdk.Lazy.string({ produce: () => this.healthCheck?.port }),
+      healthCheckProtocol: cdk.Lazy.string({ produce: () => this.healthCheck?.protocol }),
+      healthCheckTimeoutSeconds: cdk.Lazy.number({
+        produce: () => this.healthCheck?.timeout?.toSeconds(),
       }),
-      healthyThresholdCount: cdk.Lazy.numberValue({ produce: () => this.healthCheck && this.healthCheck.healthyThresholdCount }),
-      unhealthyThresholdCount: cdk.Lazy.numberValue({ produce: () => this.healthCheck && this.healthCheck.unhealthyThresholdCount }),
-      matcher: cdk.Lazy.anyValue({ produce: () => this.healthCheck && this.healthCheck.healthyHttpCodes !== undefined ? {
-        httpCode: this.healthCheck.healthyHttpCodes
-      } : undefined }),
+      healthyThresholdCount: cdk.Lazy.number({ produce: () => this.healthCheck?.healthyThresholdCount }),
+      unhealthyThresholdCount: cdk.Lazy.number({ produce: () => this.healthCheck?.unhealthyThresholdCount }),
+      matcher: cdk.Lazy.any({
+        produce: () => this.healthCheck?.healthyHttpCodes !== undefined || this.healthCheck?.healthyGrpcCodes !== undefined ? {
+          grpcCode: this.healthCheck.healthyGrpcCodes,
+          httpCode: this.healthCheck.healthyHttpCodes,
+        } : undefined,
+      }),
 
-      ...additionalProps
+      ...additionalProps,
     });
 
     this.targetGroupLoadBalancerArns = this.resource.attrLoadBalancerArns;
@@ -277,16 +318,34 @@ export abstract class TargetGroupBase extends cdk.Construct implements ITargetGr
     }
     this.targetType = props.targetType;
 
+    if (this.targetType === TargetType.LAMBDA && this.targetsJson.length >= 1) {
+      throw new Error('TargetGroup can only contain one LAMBDA target. Create a new TargetGroup.');
+    }
+
     if (props.targetJson) {
       this.targetsJson.push(props.targetJson);
     }
+  }
+
+  protected validate(): string[] {
+    const ret = super.validate();
+
+    if (this.targetType === undefined && this.targetsJson.length === 0) {
+      cdk.Annotations.of(this).addWarning("When creating an empty TargetGroup, you should specify a 'targetType' (this warning may become an error in the future).");
+    }
+
+    if (this.targetType !== TargetType.LAMBDA && this.vpc === undefined) {
+      ret.push("'vpc' is required for a non-Lambda TargetGroup");
+    }
+
+    return ret;
   }
 }
 
 /**
  * Properties to reference an existing target group
  */
-export interface TargetGroupImportProps {
+export interface TargetGroupAttributes {
   /**
    * ARN of the target group
    */
@@ -294,13 +353,23 @@ export interface TargetGroupImportProps {
 
   /**
    * Port target group is listening on
+   *
+   * @deprecated - This property is unused and the wrong type. No need to use it.
    */
-  readonly defaultPort: string;
+  readonly defaultPort?: string;
 
   /**
    * A Token representing the list of ARNs for the load balancer routing to this target group
    */
   readonly loadBalancerArns?: string;
+}
+
+/**
+ * Properties to reference an existing target group
+ *
+ * @deprecated Use TargetGroupAttributes instead
+ */
+export interface TargetGroupImportProps extends TargetGroupAttributes {
 }
 
 /**
@@ -352,6 +421,6 @@ export interface LoadBalancerTargetProps {
  *     app/my-load-balancer/50dc6c495c0c9188
  */
 export function loadBalancerNameFromListenerArn(listenerArn: string) {
-    const arnParts = cdk.Fn.split('/', listenerArn);
-    return `${cdk.Fn.select(1, arnParts)}/${cdk.Fn.select(2, arnParts)}/${cdk.Fn.select(3, arnParts)}`;
+  const arnParts = cdk.Fn.split('/', listenerArn);
+  return `${cdk.Fn.select(1, arnParts)}/${cdk.Fn.select(2, arnParts)}/${cdk.Fn.select(3, arnParts)}`;
 }

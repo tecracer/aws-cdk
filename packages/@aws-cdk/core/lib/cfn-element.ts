@@ -1,14 +1,17 @@
-import cxapi = require('@aws-cdk/cx-api');
-import { Construct } from "./construct";
-import { Lazy } from "./lazy";
-import { Token } from './token';
+import * as cxschema from '@aws-cdk/cloud-assembly-schema';
+import { Construct, Node } from 'constructs';
+
+// v2 - keep this import as a separate section to reduce merge conflict when forward merging with the v2 branch.
+// eslint-disable-next-line
+import { Construct as CoreConstruct } from './construct-compat';
+import { Lazy } from './lazy';
 
 const CFN_ELEMENT_SYMBOL = Symbol.for('@aws-cdk/core.CfnElement');
 
 /**
  * An element of a CloudFormation stack.
  */
-export abstract class CfnElement extends Construct {
+export abstract class CfnElement extends CoreConstruct {
   /**
    * Returns `true` if a construct is a stack element (i.e. part of the
    * synthesized cloudformation template).
@@ -57,11 +60,11 @@ export abstract class CfnElement extends Construct {
 
     this.stack = Stack.of(this);
 
-    this.logicalId = Lazy.stringValue({ produce: () => this.synthesizeLogicalId() }, {
-      displayHint: `${notTooLong(this.node.path)}.LogicalID`
+    this.logicalId = Lazy.uncachedString({ produce: () => this.synthesizeLogicalId() }, {
+      displayHint: `${notTooLong(Node.of(this).path)}.LogicalID`,
     });
 
-    this.node.addMetadata(cxapi.LOGICAL_ID_METADATA_KEY, this.logicalId, this.constructor);
+    Node.of(this).addMetadata(cxschema.ArtifactMetadataEntryType.LOGICAL_ID, this.logicalId, this.constructor);
   }
 
   /**
@@ -78,7 +81,7 @@ export abstract class CfnElement extends Construct {
    *      node +internal+ entries filtered.
    */
   public get creationStack(): string[] {
-    const trace = this.node.metadata.find(md => md.type === cxapi.LOGICAL_ID_METADATA_KEY)!.trace;
+    const trace = Node.of(this).metadata.find(md => md.type === cxschema.ArtifactMetadataEntryType.LOGICAL_ID)!.trace;
     if (!trace) {
       return [];
     }
@@ -117,26 +120,6 @@ export abstract class CfnElement extends Construct {
    * @internal
    */
   public abstract _toCloudFormation(): object;
-
-  /**
-   * Automatically detect references in this CfnElement
-   */
-  protected prepare() {
-    try {
-      // Note: it might be that the properties of the CFN object aren't valid.
-      // This will usually be preventatively caught in a construct's validate()
-      // and turned into a nicely descriptive error, but we're running prepare()
-      // before validate(). Swallow errors that occur because the CFN layer
-      // doesn't validate completely.
-      //
-      // This does make the assumption that the error will not be rectified,
-      // but the error will be thrown later on anyway. If the error doesn't
-      // get thrown down the line, we may miss references.
-      this.node.addReference(...findTokens(this, () => this._toCloudFormation()));
-    } catch (e) {
-      if (e.type !== 'CfnSynthesisError') { throw e; }
-    }
-  }
 
   /**
    * Called during synthesize to render the logical ID of this element. If
@@ -179,6 +162,6 @@ function notTooLong(x: string) {
   return x.substr(0, 47) + '...' + x.substr(x.length - 47);
 }
 
-import { CfnReference } from "./private/cfn-reference";
-import { findTokens } from "./private/resolve";
+import { CfnReference } from './private/cfn-reference';
 import { Stack } from './stack';
+import { Token } from './token';

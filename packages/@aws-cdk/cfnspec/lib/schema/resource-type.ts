@@ -1,5 +1,5 @@
 import { Documented, PrimitiveType } from './base-types';
-import { isTagProperty, Property, TagProperty } from './property';
+import { isTagProperty, isTagPropertyName, Property, TagProperty } from './property';
 
 export interface ResourceType extends Documented {
   /**
@@ -30,12 +30,15 @@ export interface ResourceType extends Documented {
 
 export interface TaggableResource extends ResourceType {
   Properties: {
+    FileSystemTags: TagProperty;
+    HostedZoneTags: TagProperty;
     Tags: TagProperty;
+    UserPoolTags: TagProperty;
     [name: string]: Property;
   }
 }
 
-export type Attribute = PrimitiveAttribute | ListAttribute;
+export type Attribute = PrimitiveAttribute | ListAttribute | MapAttribute;
 
 export interface PrimitiveAttribute {
   PrimitiveType: PrimitiveType;
@@ -53,6 +56,13 @@ export interface ComplexListAttribute {
   ItemType: string;
 }
 
+export type MapAttribute = PrimitiveMapAttribute;
+
+export interface PrimitiveMapAttribute {
+  Type: 'Map';
+  PrimitiveItemType: PrimitiveType;
+}
+
 /**
  * Determine if the resource supports tags
  *
@@ -61,8 +71,13 @@ export interface ComplexListAttribute {
  * generation of properties will be used.
  */
 export function isTaggableResource(spec: ResourceType): spec is TaggableResource {
-  if (spec.Properties && spec.Properties.Tags) {
-    return isTagProperty(spec.Properties.Tags);
+  if (spec.Properties === undefined) {
+    return false;
+  }
+  for (const key of Object.keys(spec.Properties)) {
+    if (isTagPropertyName(key) && isTagProperty(spec.Properties[key])) {
+      return true;
+    }
   }
   return false;
 }
@@ -75,12 +90,20 @@ export function isListAttribute(spec: Attribute): spec is ListAttribute {
   return (spec as ListAttribute).Type === 'List';
 }
 
+export function isMapAttribute(spec: Attribute): spec is MapAttribute {
+  return (spec as MapAttribute).Type === 'Map';
+}
+
 export function isPrimitiveListAttribute(spec: Attribute): spec is PrimitiveListAttribute {
   return isListAttribute(spec) && !!(spec as PrimitiveListAttribute).PrimitiveItemType;
 }
 
 export function isComplexListAttribute(spec: Attribute): spec is ComplexListAttribute {
   return isListAttribute(spec) && !!(spec as ComplexListAttribute).ItemType;
+}
+
+export function isPrimitiveMapAttribute(spec: Attribute): spec is PrimitiveMapAttribute {
+  return isMapAttribute(spec) && !!(spec as PrimitiveMapAttribute).PrimitiveItemType;
 }
 
 /**

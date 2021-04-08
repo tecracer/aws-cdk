@@ -13,13 +13,15 @@
                 "Arn"
               ]
             },
-            "Id": "awscdksqseventtargetMyQueueF7EBF3AE"
+            "Id": "Target0"
           }
         ]
       }
     },
     "MyQueueE6CA6235": {
-      "Type": "AWS::SQS::Queue"
+      "Type": "AWS::SQS::Queue",
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
     },
     "MyQueuePolicy6BBEDDAC": {
       "Type": "AWS::SQS::QueuePolicy",
@@ -44,17 +46,7 @@
               },
               "Effect": "Allow",
               "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "events.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
+                "Service": "events.amazonaws.com"
               },
               "Resource": {
                 "Fn::GetAtt": [

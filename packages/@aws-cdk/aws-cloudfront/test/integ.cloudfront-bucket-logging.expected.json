@@ -1,15 +1,14 @@
 {
   "Resources": {
     "Bucket83908E77": {
-      "DeletionPolicy": "Delete",
+      "Type": "AWS::S3::Bucket",
       "UpdateReplacePolicy": "Delete",
-      "Type": "AWS::S3::Bucket"
+      "DeletionPolicy": "Delete"
     },
     "AnAmazingWebsiteProbablyCFDistribution47E3983B": {
       "Type": "AWS::CloudFront::Distribution",
       "Properties": {
         "DistributionConfig": {
-          "CacheBehaviors": [],
           "DefaultCacheBehavior": {
             "AllowedMethods": [
               "GET",
@@ -19,6 +18,7 @@
               "GET",
               "HEAD"
             ],
+            "Compress": true,
             "ForwardedValues": {
               "Cookies": {
                 "Forward": "none"
@@ -44,6 +44,8 @@
           },
           "Origins": [
             {
+              "ConnectionAttempts": 3,
+              "ConnectionTimeout": 10,
               "CustomOriginConfig": {
                 "HTTPPort": 80,
                 "HTTPSPort": 443,
@@ -73,14 +75,13 @@
     },
     "AnAmazingWebsiteProbably2LoggingBucket222F7CE9": {
       "Type": "AWS::S3::Bucket",
-      "DeletionPolicy": "Retain",
-      "UpdateReplacePolicy": "Retain"
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
     },
     "AnAmazingWebsiteProbably2CFDistribution7C1CCD12": {
       "Type": "AWS::CloudFront::Distribution",
       "Properties": {
         "DistributionConfig": {
-          "CacheBehaviors": [],
           "DefaultCacheBehavior": {
             "AllowedMethods": [
               "GET",
@@ -90,6 +91,7 @@
               "GET",
               "HEAD"
             ],
+            "Compress": true,
             "ForwardedValues": {
               "Cookies": {
                 "Forward": "none"
@@ -114,6 +116,8 @@
           },
           "Origins": [
             {
+              "ConnectionAttempts": 3,
+              "ConnectionTimeout": 10,
               "CustomOriginConfig": {
                 "HTTPPort": 80,
                 "HTTPSPort": 443,

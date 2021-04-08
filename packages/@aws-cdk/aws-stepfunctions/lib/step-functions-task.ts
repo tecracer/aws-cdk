@@ -1,10 +1,11 @@
-import cloudwatch = require('@aws-cdk/aws-cloudwatch');
-import iam = require('@aws-cdk/aws-iam');
+import * as cloudwatch from '@aws-cdk/aws-cloudwatch';
+import * as iam from '@aws-cdk/aws-iam';
 import { Duration } from '@aws-cdk/core';
 import { Task } from './states/task';
 
 /**
  * Interface for resources that can be used as tasks
+ * @deprecated replaced by `TaskStateBase`.
  */
 export interface IStepFunctionsTask {
   /**
@@ -15,6 +16,7 @@ export interface IStepFunctionsTask {
 
 /**
  * Properties that define what kind of task should be created
+ * @deprecated used by `IStepFunctionsTask`. `IStepFunctionsTask` is deprecated and replaced by `TaskStateBase`.
  */
 export interface StepFunctionsTaskConfig {
   /**
@@ -28,9 +30,10 @@ export interface StepFunctionsTaskConfig {
   /**
    * Parameters pass a collection of key-value pairs, either static values or JSONPath expressions that select from the input.
    *
-   * What is passed here will be merged with any default parameters
-   * configured by the `resource`. For example, a DynamoDB table target
-   * will
+   * The meaning of these parameters is task-dependent.
+   *
+   * Its values will be merged with the `parameters` property which is configured directly
+   * on the Task state.
    *
    * @see
    * https://docs.aws.amazon.com/step-functions/latest/dg/input-output-inputpath-params.html#input-output-parameters
@@ -77,4 +80,29 @@ export interface StepFunctionsTaskConfig {
    * @default No metrics
    */
   readonly metricDimensions?: cloudwatch.DimensionHash;
+}
+
+/**
+ * Three ways to call an integrated service: Request Response, Run a Job and Wait for a Callback with Task Token.
+ * @see https://docs.aws.amazon.com/step-functions/latest/dg/connect-to-resource.html
+ *
+ * Here, they are named as FIRE_AND_FORGET, SYNC and WAIT_FOR_TASK_TOKEN respectfully.
+ *
+ * @default FIRE_AND_FORGET
+ */
+export enum ServiceIntegrationPattern {
+  /**
+   * Call a service and progress to the next state immediately after the API call completes
+   */
+  FIRE_AND_FORGET = 'FIRE_AND_FORGET',
+
+  /**
+   * Call a service and wait for a job to complete.
+   */
+  SYNC = 'SYNC',
+
+  /**
+   * Call a service with a task token and wait until that token is returned by SendTaskSuccess/SendTaskFailure with payload.
+   */
+  WAIT_FOR_TASK_TOKEN = 'WAIT_FOR_TASK_TOKEN'
 }

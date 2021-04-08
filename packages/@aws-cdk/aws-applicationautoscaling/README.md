@@ -1,17 +1,19 @@
-## AWS Auto Scaling Construct Library
+# AWS Auto Scaling Construct Library
 <!--BEGIN STABILITY BANNER-->
 
 ---
 
-![Stability: Stable](https://img.shields.io/badge/stability-Stable-success.svg?style=for-the-badge)
+![cfn-resources: Stable](https://img.shields.io/badge/cfn--resources-stable-success.svg?style=for-the-badge)
 
+![cdk-constructs: Stable](https://img.shields.io/badge/cdk--constructs-stable-success.svg?style=for-the-badge)
 
 ---
+
 <!--END STABILITY BANNER-->
 
 **Application AutoScaling** is used to configure autoscaling for all
 services other than scaling EC2 instances. For example, you will use this to
-scale ECS tasks, DynamoDB capacity, Spot Fleet sizes and more.
+scale ECS tasks, DynamoDB capacity, Spot Fleet sizes, Comprehend document classification endpoints, Lambda function provisioned concurrency and more.
 
 As a CDK user, you will probably not have to interact with this library
 directly; instead, it will be used by other construct libraries to
@@ -20,7 +22,7 @@ offer AutoScaling features for their own constructs.
 This document will describe the general autoscaling features and concepts;
 your particular service may offer only a subset of these.
 
-### AutoScaling basics
+## AutoScaling basics
 
 Resources can offer one or more **attributes** to autoscale, typically
 representing some capacity dimension of the underlying service. For example,
@@ -60,13 +62,13 @@ capacity.scaleToTrackMetric(...);
 capacity.scaleOnSchedule(...);
 ```
 
-### Step Scaling
+## Step Scaling
 
 This type of scaling scales in and out in deterministic steps that you
 configure, in response to metric values. For example, your scaling strategy
 to scale in response to CPU usage might look like this:
 
-```
+```plaintext
  Scaling        -1          (no change)          +1       +3
             │        │                       │        │        │
             ├────────┼───────────────────────┼────────┼────────┤
@@ -97,7 +99,7 @@ capacity.scaleOnMetric('ScaleToCPU', {
 The AutoScaling construct library will create the required CloudWatch alarms and
 AutoScaling policies for you.
 
-### Target Tracking Scaling
+## Target Tracking Scaling
 
 This type of scaling scales in and out in order to keep a metric (typically
 representing utilization) around a value you prefer. This type of scaling is
@@ -109,7 +111,7 @@ The following example configures the read capacity of a DynamoDB table
 to be around 60% utilization:
 
 ```ts
-const readCapacity = table.autosScaleReadCapacity({
+const readCapacity = table.autoScaleReadCapacity({
   minCapacity: 10,
   maxCapacity: 1000
 });
@@ -118,7 +120,7 @@ readCapacity.scaleOnUtilization({
 });
 ```
 
-### Scheduled Scaling
+## Scheduled Scaling
 
 This type of scaling is used to change capacities based on time. It works
 by changing the `minCapacity` and `maxCapacity` of the attribute, and so
@@ -157,3 +159,42 @@ capacity.scaleOnSchedule('AllowDownscalingAtNight', {
   schedule: autoscaling.Schedule.cron({ hour: '20', minute: '0' }),
   minCapacity: 1
 });
+```
+
+## Examples
+
+### Lambda Provisioned Concurrency Auto Scaling
+
+```ts
+   const handler = new lambda.Function(this, 'MyFunction', {
+      runtime: lambda.Runtime.PYTHON_3_7,
+      handler: 'index.handler',
+      code: new lambda.InlineCode(`
+import json, time
+def handler(event, context):
+    time.sleep(1)
+    return {
+        'statusCode': 200,
+        'body': json.dumps('Hello CDK from Lambda!')
+    }`),
+      reservedConcurrentExecutions: 2,
+    });
+
+    const fnVer = handler.addVersion('CDKLambdaVersion', undefined, 'demo alias', 10);
+
+    new apigateway.LambdaRestApi(this, 'API', { handler: fnVer })
+
+    const target = new applicationautoscaling.ScalableTarget(this, 'ScalableTarget', {
+      serviceNamespace: applicationautoscaling.ServiceNamespace.LAMBDA,
+      maxCapacity: 100,
+      minCapacity: 10,
+      resourceId: `function:${handler.functionName}:${fnVer.version}`,
+      scalableDimension: 'lambda:function:ProvisionedConcurrency',
+    })
+s
+    target.scaleToTrackMetric('PceTracking', {
+      targetValue: 0.9,
+      predefinedMetric: applicationautoscaling.PredefinedMetric.LAMBDA_PROVISIONED_CONCURRENCY_UTILIZATION,
+    })
+  }
+  ```

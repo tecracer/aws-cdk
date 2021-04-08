@@ -14,28 +14,38 @@ export enum IpAddressType {
 }
 
 /**
- * Backend protocol for health checks
+ * Backend protocol for network load balancers and health checks
  */
 export enum Protocol {
   /**
-   * HTTP
+   * HTTP (ALB health checks and NLB health checks)
    */
   HTTP = 'HTTP',
 
   /**
-   * HTTPS
+   * HTTPS (ALB health checks and NLB health checks)
    */
   HTTPS = 'HTTPS',
 
   /**
-   * TCP
+   * TCP (NLB, NLB health checks)
    */
   TCP = 'TCP',
 
   /**
-   * TLS
+   * TLS (NLB)
    */
-  TLS = 'TLS'
+  TLS = 'TLS',
+
+  /**
+   * UDP (NLB)
+   */
+  UDP = 'UDP',
+
+  /**
+   * Listen to both TCP and UDP on the same port (NLB)
+   */
+  TCP_UDP = 'TCP_UDP',
 }
 
 /**
@@ -51,6 +61,26 @@ export enum ApplicationProtocol {
    * HTTPS
    */
   HTTPS = 'HTTPS'
+}
+
+/**
+ * Load balancing protocol version for application load balancers
+ */
+export enum ApplicationProtocolVersion {
+  /**
+   * GRPC
+   */
+  GRPC = 'GRPC',
+
+  /**
+   * HTTP1
+   */
+  HTTP1 = 'HTTP1',
+
+  /**
+   * HTTP2
+   */
+  HTTP2 = 'HTTP2',
 }
 
 /**
@@ -71,6 +101,27 @@ export enum SslPolicy {
    * The recommended security policy
    */
   RECOMMENDED = 'ELBSecurityPolicy-2016-08',
+
+  /**
+   * Strong foward secrecy ciphers and TLV1.2 only (2020 edition).
+   * Same as FORWARD_SECRECY_TLS12_RES, but only supports GCM versions of the TLS ciphers
+   */
+  FORWARD_SECRECY_TLS12_RES_GCM = 'ELBSecurityPolicy-FS-1-2-Res-2020-10',
+
+  /**
+   * Strong forward secrecy ciphers and TLS1.2 only
+   */
+  FORWARD_SECRECY_TLS12_RES = 'ELBSecurityPolicy-FS-1-2-Res-2019-08',
+
+  /**
+   * Forward secrecy ciphers and TLS1.2 only
+   */
+  FORWARD_SECRECY_TLS12 = 'ELBSecurityPolicy-FS-1-2-2019-08',
+
+  /**
+   * Forward secrecy ciphers only with TLS1.1 and higher
+   */
+  FORWARD_SECRECY_TLS11 = 'ELBSecurityPolicy-FS-1-1-2019-08',
 
   /**
    * Forward secrecy ciphers only
@@ -114,4 +165,9 @@ export enum TargetType {
    * Targets identified by IP address
    */
   IP = 'ip',
+
+  /**
+   * Target is a single Lambda Function
+   */
+  LAMBDA = 'lambda',
 }

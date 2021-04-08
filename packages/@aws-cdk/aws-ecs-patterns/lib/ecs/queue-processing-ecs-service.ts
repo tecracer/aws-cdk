@@ -1,15 +1,30 @@
-import ecs = require('@aws-cdk/aws-ecs');
-import cdk = require('@aws-cdk/core');
+import { Ec2Service, Ec2TaskDefinition } from '@aws-cdk/aws-ecs';
+import * as cxapi from '@aws-cdk/cx-api';
+import { Construct } from 'constructs';
 import { QueueProcessingServiceBase, QueueProcessingServiceBaseProps } from '../base/queue-processing-service-base';
 
 /**
- * Properties to define a queue processing Ec2 service
+ * The properties for the QueueProcessingEc2Service service.
  */
 export interface QueueProcessingEc2ServiceProps extends QueueProcessingServiceBaseProps {
   /**
-   * The minimum number of CPU units to reserve for the container.
+   * The number of cpu units used by the task.
    *
-   * @default - No minimum CPU units reserved.
+   * Valid values, which determines your range of valid values for the memory parameter:
+   *
+   * 256 (.25 vCPU) - Available memory values: 0.5GB, 1GB, 2GB
+   *
+   * 512 (.5 vCPU) - Available memory values: 1GB, 2GB, 3GB, 4GB
+   *
+   * 1024 (1 vCPU) - Available memory values: 2GB, 3GB, 4GB, 5GB, 6GB, 7GB, 8GB
+   *
+   * 2048 (2 vCPU) - Available memory values: Between 4GB and 16GB in 1GB increments
+   *
+   * 4096 (4 vCPU) - Available memory values: Between 8GB and 30GB in 1GB increments
+   *
+   * This default is set in the underlying FargateTaskDefinition construct.
+   *
+   * @default none
    */
   readonly cpu?: number;
 
@@ -38,40 +53,71 @@ export interface QueueProcessingEc2ServiceProps extends QueueProcessingServiceBa
    * @default - No memory reserved.
    */
   readonly memoryReservationMiB?: number;
+
+  /**
+   * Optional name for the container added
+   *
+   * @default - QueueProcessingContainer
+   */
+  readonly containerName?: string;
 }
 
 /**
- * Class to create a queue processing Ec2 service
+ * Class to create a queue processing EC2 service.
  */
 export class QueueProcessingEc2Service extends QueueProcessingServiceBase {
 
   /**
-   * The ECS service in this construct
+   * The EC2 service in this construct.
    */
-  public readonly service: ecs.Ec2Service;
+  public readonly service: Ec2Service;
+  /**
+   * The EC2 task definition in this construct
+   */
+  public readonly taskDefinition: Ec2TaskDefinition;
 
-  constructor(scope: cdk.Construct, id: string, props: QueueProcessingEc2ServiceProps) {
+  /**
+   * Constructs a new instance of the QueueProcessingEc2Service class.
+   */
+  constructor(scope: Construct, id: string, props: QueueProcessingEc2ServiceProps) {
     super(scope, id, props);
 
+    const containerName = props.containerName ?? 'QueueProcessingContainer';
+
     // Create a Task Definition for the container to start
-    const taskDefinition = new ecs.Ec2TaskDefinition(this, 'QueueProcessingTaskDef');
-    taskDefinition.addContainer('QueueProcessingContainer', {
+    this.taskDefinition = new Ec2TaskDefinition(this, 'QueueProcessingTaskDef', {
+      family: props.family,
+    });
+    this.taskDefinition.addContainer(containerName, {
       image: props.image,
       memoryLimitMiB: props.memoryLimitMiB,
       memoryReservationMiB: props.memoryReservationMiB,
       cpu: props.cpu,
       command: props.command,
       environment: this.environment,
-      logging: this.logDriver
+      secrets: this.secrets,
+      logging: this.logDriver,
     });
+
+    // The desiredCount should be removed from the fargate service when the feature flag is removed.
+    const desiredCount = this.node.tryGetContext(cxapi.ECS_REMOVE_DEFAULT_DESIRED_COUNT) ? undefined : this.desiredCount;
 
     // Create an ECS service with the previously defined Task Definition and configure
     // autoscaling based on cpu utilization and number of messages visible in the SQS queue.
-    this.service = new ecs.Ec2Service(this, 'QueueProcessingService', {
-      cluster: props.cluster,
-      desiredCount: this.desiredCount,
-      taskDefinition
+    this.service = new Ec2Service(this, 'QueueProcessingService', {
+      cluster: this.cluster,
+      desiredCount: desiredCount,
+      taskDefinition: this.taskDefinition,
+      serviceName: props.serviceName,
+      minHealthyPercent: props.minHealthyPercent,
+      maxHealthyPercent: props.maxHealthyPercent,
+      propagateTags: props.propagateTags,
+      enableECSManagedTags: props.enableECSManagedTags,
+      deploymentController: props.deploymentController,
+      circuitBreaker: props.circuitBreaker,
     });
+
     this.configureAutoscalingForService(this.service);
+    this.grantPermissionsToService(this.service);
   }
 }

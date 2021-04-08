@@ -1,10 +1,14 @@
-import cfn = require('@aws-cdk/aws-cloudformation');
-import codepipeline = require('@aws-cdk/aws-codepipeline');
-import cpactions = require('@aws-cdk/aws-codepipeline-actions');
-import events = require('@aws-cdk/aws-events');
-import iam = require('@aws-cdk/aws-iam');
-import cdk = require('@aws-cdk/core');
-import cxapi = require('@aws-cdk/cx-api');
+import * as cfn from '@aws-cdk/aws-cloudformation';
+import * as codepipeline from '@aws-cdk/aws-codepipeline';
+import * as cpactions from '@aws-cdk/aws-codepipeline-actions';
+import * as events from '@aws-cdk/aws-events';
+import * as iam from '@aws-cdk/aws-iam';
+import * as cxschema from '@aws-cdk/cloud-assembly-schema';
+import * as cdk from '@aws-cdk/core';
+
+// keep this import separate from other imports to reduce chance for merge conflicts with v2-main
+// eslint-disable-next-line no-duplicate-imports, import/order
+import { Construct } from '@aws-cdk/core';
 
 export interface PipelineDeployStackActionProps {
   /**
@@ -33,11 +37,25 @@ export interface PipelineDeployStackActionProps {
   readonly createChangeSetRunOrder?: number;
 
   /**
+   * The name of the CodePipeline action creating the ChangeSet.
+   *
+   * @default 'ChangeSet'
+   */
+  readonly createChangeSetActionName?: string;
+
+  /**
    * The runOrder for the CodePipeline action executing the ChangeSet.
    *
    * @default ``createChangeSetRunOrder + 1``
    */
   readonly executeChangeSetRunOrder?: number;
+
+  /**
+   * The name of the CodePipeline action creating the ChangeSet.
+   *
+   * @default 'Execute'
+   */
+  readonly executeChangeSetActionName?: string;
 
   /**
    * IAM role to assume when deploying changes.
@@ -93,7 +111,7 @@ export class PipelineDeployStackAction implements codepipeline.IAction {
   /**
    * The role used by CloudFormation for the deploy action
    */
-  private _deploymentRole: iam.IRole;
+  private _deploymentRole?: iam.IRole;
 
   private readonly stack: cdk.Stack;
   private readonly prepareChangeSetAction: cpactions.CloudFormationCreateReplaceChangeSetAction;
@@ -101,7 +119,7 @@ export class PipelineDeployStackAction implements codepipeline.IAction {
 
   constructor(props: PipelineDeployStackActionProps) {
     this.stack = props.stack;
-    const assets = this.stack.node.metadata.filter(md => md.type === cxapi.ASSET_METADATA);
+    const assets = this.stack.node.metadata.filter(md => md.type === cxschema.ArtifactMetadataEntryType.ASSET);
     if (assets.length > 0) {
       // FIXME: Implement the necessary actions to publish assets
       throw new Error(`Cannot deploy the stack ${this.stack.stackName} because it references ${assets.length} asset(s)`);
@@ -116,28 +134,28 @@ export class PipelineDeployStackAction implements codepipeline.IAction {
     const changeSetName = props.changeSetName || 'CDK-CodePipeline-ChangeSet';
     const capabilities = cfnCapabilities(props.adminPermissions, props.capabilities);
     this.prepareChangeSetAction = new cpactions.CloudFormationCreateReplaceChangeSetAction({
-      actionName: 'ChangeSet',
+      actionName: props.createChangeSetActionName ?? 'ChangeSet',
       changeSetName,
       runOrder: createChangeSetRunOrder,
       stackName: props.stack.stackName,
-      templatePath: props.input.atPath(`${props.stack.stackName}.template.yaml`),
+      templatePath: props.input.atPath(props.stack.templateFile),
       adminPermissions: props.adminPermissions,
       deploymentRole: props.role,
       capabilities,
     });
     this.executeChangeSetAction = new cpactions.CloudFormationExecuteChangeSetAction({
-      actionName: 'Execute',
+      actionName: props.executeChangeSetActionName ?? 'Execute',
       changeSetName,
       runOrder: executeChangeSetRunOrder,
       stackName: this.stack.stackName,
     });
   }
 
-  public bind(scope: cdk.Construct, stage: codepipeline.IStage, options: codepipeline.ActionBindOptions):
-      codepipeline.ActionConfig {
+  public bind(scope: Construct, stage: codepipeline.IStage, options: codepipeline.ActionBindOptions):
+  codepipeline.ActionConfig {
     if (this.stack.environment !== cdk.Stack.of(scope).environment) {
       // FIXME: Add the necessary to extend to stacks in a different account
-      throw new Error(`Cross-environment deployment is not supported`);
+      throw new Error('Cross-environment deployment is not supported');
     }
 
     stage.addAction(this.prepareChangeSetAction);
@@ -147,6 +165,10 @@ export class PipelineDeployStackAction implements codepipeline.IAction {
   }
 
   public get deploymentRole(): iam.IRole {
+    if (!this._deploymentRole) {
+      throw new Error('Use this action in a pipeline first before accessing \'deploymentRole\'');
+    }
+
     return this._deploymentRole;
   }
 

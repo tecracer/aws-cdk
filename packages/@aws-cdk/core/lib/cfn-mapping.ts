@@ -1,6 +1,6 @@
+import { Construct } from 'constructs';
 import { CfnRefElement } from './cfn-element';
 import { Fn } from './cfn-fn';
-import { Construct } from './construct';
 import { Token } from './token';
 
 export interface CfnMappingProps {
@@ -62,8 +62,8 @@ export class CfnMapping extends CfnRefElement {
   public _toCloudFormation(): object {
     return {
       Mappings: {
-        [this.logicalId]: this.mapping
-      }
+        [this.logicalId]: this.mapping,
+      },
     };
   }
 }

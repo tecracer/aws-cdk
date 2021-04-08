@@ -1,6 +1,7 @@
-// import cxapi = require('@aws-cdk/cx-api');
-import { IAspect } from './aspect';
-import { IConstruct } from './construct';
+// import * as cxapi from '@aws-cdk/cx-api';
+import { Annotations } from './annotations';
+import { IAspect, Aspects } from './aspect';
+import { Construct, IConstruct } from './construct-compat';
 import { ITaggable, TagManager } from './tag-manager';
 
 /**
@@ -73,7 +74,7 @@ abstract class TagBase implements IAspect {
 
   public visit(construct: IConstruct): void {
     if (TagManager.isTaggable(construct)) {
-        this.applyTag(construct);
+      this.applyTag(construct);
     }
   }
 
@@ -84,6 +85,26 @@ abstract class TagBase implements IAspect {
  * The Tag Aspect will handle adding a tag to this node and cascading tags to children
  */
 export class Tag extends TagBase {
+
+  /**
+   * DEPRECATED: add tags to the node of a construct and all its the taggable children
+   *
+   * @deprecated use `Tags.of(scope).add()`
+   */
+  public static add(scope: Construct, key: string, value: string, props: TagProps = {}) {
+    Annotations.of(scope).addDeprecation('@aws-cdk/core.Tag.add(scope,k,v)', 'Use "Tags.of(scope).add(k,v)" instead');
+    Tags.of(scope).add(key, value, props);
+  }
+
+  /**
+   * DEPRECATED: remove tags to the node of a construct and all its the taggable children
+   *
+   * @deprecated use `Tags.of(scope).remove()`
+   */
+  public static remove(scope: Construct, key: string, props: TagProps = {}) {
+    Annotations.of(scope).addDeprecation('@aws-cdk/core.Tag.remove(scope,k,v)', 'Use "Tags.of(scope).remove(k,v)" instead');
+    Tags.of(scope).remove(key, props);
+  }
 
   /**
    * The string value of the tag
@@ -105,10 +126,39 @@ export class Tag extends TagBase {
       resource.tags.setTag(
         this.key,
         this.value,
-        this.props.priority !== undefined ? this.props.priority : this.defaultPriority,
-        this.props.applyToLaunchedInstances !== false
+        this.props.priority ?? this.defaultPriority,
+        this.props.applyToLaunchedInstances !== false,
       );
     }
+  }
+}
+
+/**
+ * Manages AWS tags for all resources within a construct scope.
+ */
+export class Tags {
+  /**
+   * Returns the tags API for this scope.
+   * @param scope The scope
+   */
+  public static of(scope: IConstruct): Tags {
+    return new Tags(scope);
+  }
+
+  private constructor(private readonly scope: IConstruct) { }
+
+  /**
+   * add tags to the node of a construct and all its the taggable children
+   */
+  public add(key: string, value: string, props: TagProps = {}) {
+    Aspects.of(this.scope).add(new Tag(key, value, props));
+  }
+
+  /**
+   * remove tags to the node of a construct and all its the taggable children
+   */
+  public remove(key: string, props: TagProps = {}) {
+    Aspects.of(this.scope).add(new RemoveTag(key, props));
   }
 }
 
@@ -125,7 +175,7 @@ export class RemoveTag extends TagBase {
 
   protected applyTag(resource: ITaggable): void {
     if (resource.tags.applyTagAspectHere(this.props.includeResourceTypes, this.props.excludeResourceTypes)) {
-      resource.tags.removeTag(this.key, this.props.priority !== undefined ? this.props.priority : this.defaultPriority);
+      resource.tags.removeTag(this.key, this.props.priority ?? this.defaultPriority);
     }
   }
 }

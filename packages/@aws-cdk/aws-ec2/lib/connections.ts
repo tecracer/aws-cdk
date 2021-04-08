@@ -1,6 +1,6 @@
-import { IPeer, Peer } from "./peer";
+import { IPeer, Peer } from './peer';
 import { Port } from './port';
-import { ISecurityGroup } from "./security-group";
+import { ISecurityGroup } from './security-group';
 
 /**
  * The goal of this module is to make possible to write statements like this:
@@ -172,8 +172,7 @@ export class Connections implements IConnectable {
     this._securityGroups.forEachAndForever(securityGroup => {
       this._securityGroupRules.forEachAndForever(rule => {
         securityGroup.addIngressRule(rule, portRange, description);
-        // FIXME: this seems required but we didn't use to have it. Research.
-        // securityGroup.addEgressRule(rule, portRange, description);
+        securityGroup.addEgressRule(rule, portRange, description);
       });
     });
   }
@@ -229,7 +228,7 @@ export class Connections implements IConnectable {
    */
   public allowToDefaultPort(other: IConnectable, description?: string) {
     if (other.connections.defaultPort === undefined) {
-      throw new Error('Cannot call alloToDefaultPort(): other resource has no default port');
+      throw new Error('Cannot call allowToDefaultPort(): other resource has no default port');
     }
 
     this.allowTo(other, other.connections.defaultPort, description);

@@ -1,12 +1,11 @@
-import scalingcommon = require('@aws-cdk/aws-autoscaling-common');
-import cdk = require('@aws-cdk/core');
-import fc = require('fast-check');
-import appscaling = require('../lib');
-import { ServiceNamespace } from '../lib';
+import * as scalingcommon from '@aws-cdk/aws-autoscaling-common';
+import * as constructs from 'constructs';
+import * as fc from 'fast-check';
+import * as appscaling from '../lib';
 
-export function createScalableTarget(scope: cdk.Construct) {
+export function createScalableTarget(scope: constructs.Construct) {
   return new appscaling.ScalableTarget(scope, 'Target', {
-    serviceNamespace: ServiceNamespace.DYNAMODB,
+    serviceNamespace: appscaling.ServiceNamespace.DYNAMODB,
     scalableDimension: 'test:TestCount',
     resourceId: 'test:this/test',
     minCapacity: 1,

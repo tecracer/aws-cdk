@@ -1,13 +1,15 @@
-import { ApplicationTargetGroup, IApplicationLoadBalancerTarget } from "../alb/application-target-group";
-import { INetworkLoadBalancerTarget, NetworkTargetGroup } from "../nlb/network-target-group";
-import { ITargetGroup, LoadBalancerTargetProps } from "./base-target-group";
-import { TargetType } from "./enums";
+import { IApplicationLoadBalancerTarget, IApplicationTargetGroup } from '../alb/application-target-group';
+import { INetworkLoadBalancerTarget, INetworkTargetGroup } from '../nlb/network-target-group';
+import { ITargetGroup, LoadBalancerTargetProps } from './base-target-group';
+import { TargetType } from './enums';
 
 /**
  * An EC2 instance that is the target for load balancing
  *
  * If you register a target of this type, you are responsible for making
  * sure the load balancer's security group can connect to the instance.
+ *
+ * @deprecated Use IpTarget from the @aws-cdk/aws-elasticloadbalancingv2-targets package instead.
  */
 export class InstanceTarget implements IApplicationLoadBalancerTarget, INetworkLoadBalancerTarget {
   /**
@@ -25,7 +27,7 @@ export class InstanceTarget implements IApplicationLoadBalancerTarget, INetworkL
    * Don't call this, it is called automatically when you add the target to a
    * load balancer.
    */
-  public attachToApplicationTargetGroup(targetGroup: ApplicationTargetGroup): LoadBalancerTargetProps {
+  public attachToApplicationTargetGroup(targetGroup: IApplicationTargetGroup): LoadBalancerTargetProps {
     return this.attach(targetGroup);
   }
 
@@ -35,14 +37,14 @@ export class InstanceTarget implements IApplicationLoadBalancerTarget, INetworkL
    * Don't call this, it is called automatically when you add the target to a
    * load balancer.
    */
-  public attachToNetworkTargetGroup(targetGroup: NetworkTargetGroup): LoadBalancerTargetProps {
+  public attachToNetworkTargetGroup(targetGroup: INetworkTargetGroup): LoadBalancerTargetProps {
     return this.attach(targetGroup);
   }
 
   private attach(_targetGroup: ITargetGroup): LoadBalancerTargetProps {
     return {
       targetType: TargetType.INSTANCE,
-      targetJson: { id: this.instanceId, port: this.port }
+      targetJson: { id: this.instanceId, port: this.port },
     };
   }
 }
@@ -57,6 +59,8 @@ export class InstanceTarget implements IApplicationLoadBalancerTarget, INetworkL
  *
  * If you register a target of this type, you are responsible for making
  * sure the load balancer's security group can send packets to the IP address.
+ *
+ * @deprecated Use IpTarget from the @aws-cdk/aws-elasticloadbalancingv2-targets package instead.
  */
 export class IpTarget implements IApplicationLoadBalancerTarget, INetworkLoadBalancerTarget {
   /**
@@ -90,7 +94,7 @@ export class IpTarget implements IApplicationLoadBalancerTarget, INetworkLoadBal
    * Don't call this, it is called automatically when you add the target to a
    * load balancer.
    */
-  public attachToApplicationTargetGroup(targetGroup: ApplicationTargetGroup): LoadBalancerTargetProps {
+  public attachToApplicationTargetGroup(targetGroup: IApplicationTargetGroup): LoadBalancerTargetProps {
     return this.attach(targetGroup);
   }
 
@@ -100,14 +104,14 @@ export class IpTarget implements IApplicationLoadBalancerTarget, INetworkLoadBal
    * Don't call this, it is called automatically when you add the target to a
    * load balancer.
    */
-  public attachToNetworkTargetGroup(targetGroup: NetworkTargetGroup): LoadBalancerTargetProps {
+  public attachToNetworkTargetGroup(targetGroup: INetworkTargetGroup): LoadBalancerTargetProps {
     return this.attach(targetGroup);
   }
 
   private attach(_targetGroup: ITargetGroup): LoadBalancerTargetProps {
     return {
       targetType: TargetType.IP,
-      targetJson: { id: this.ipAddress, port: this.port, availabilityZone: this.availabilityZone }
+      targetJson: { id: this.ipAddress, port: this.port, availabilityZone: this.availabilityZone },
     };
   }
 }

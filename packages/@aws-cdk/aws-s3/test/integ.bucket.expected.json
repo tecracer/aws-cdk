@@ -6,20 +6,7 @@
         "KeyPolicy": {
           "Statement": [
             {
-              "Action": [
-                "kms:Create*",
-                "kms:Describe*",
-                "kms:Enable*",
-                "kms:List*",
-                "kms:Put*",
-                "kms:Update*",
-                "kms:Revoke*",
-                "kms:Disable*",
-                "kms:Get*",
-                "kms:Delete*",
-                "kms:ScheduleKeyDeletion",
-                "kms:CancelKeyDeletion"
-              ],
+              "Action": "kms:*",
               "Effect": "Allow",
               "Principal": {
                 "AWS": {
@@ -40,38 +27,17 @@
                 }
               },
               "Resource": "*"
-            },
-            {
-              "Action": [
-                "kms:Decrypt",
-                "kms:DescribeKey",
-                "kms:Encrypt",
-                "kms:ReEncrypt*",
-                "kms:GenerateDataKey*"
-              ],
-              "Effect": "Allow",
-              "Principal": {
-                "AWS": {
-                  "Fn::GetAtt": [
-                    "MyUserDC45028B",
-                    "Arn"
-                  ]
-                }
-              },
-              "Resource": "*"
             }
           ],
           "Version": "2012-10-17"
         },
         "Description": "Created by aws-cdk-s3/MyBucket"
       },
-      "DeletionPolicy": "Retain",
-      "UpdateReplacePolicy": "Retain"
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
     },
     "MyBucketF68F3FF0": {
       "Type": "AWS::S3::Bucket",
-      "DeletionPolicy": "Delete",
-      "UpdateReplacePolicy": "Delete",
       "Properties": {
         "BucketEncryption": {
           "ServerSideEncryptionConfiguration": [
@@ -88,12 +54,12 @@
             }
           ]
         }
-      }
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
     },
     "MyOtherBucket543F3540": {
       "Type": "AWS::S3::Bucket",
-      "DeletionPolicy": "Delete",
-      "UpdateReplacePolicy": "Delete",
       "Properties": {
         "BucketEncryption": {
           "ServerSideEncryptionConfiguration": [
@@ -104,7 +70,9 @@
             }
           ]
         }
-      }
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
     },
     "MyUserDC45028B": {
       "Type": "AWS::IAM::User"
@@ -120,7 +88,7 @@
                 "s3:GetBucket*",
                 "s3:List*",
                 "s3:DeleteObject*",
-                "s3:PutObject*",
+                "s3:PutObject",
                 "s3:Abort*"
               ],
               "Effect": "Allow",

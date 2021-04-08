@@ -1,220 +1,5 @@
 {
   "Resources": {
-    "TopicBFC7AF6E": {
-      "Type": "AWS::SNS::Topic"
-    },
-    "FunctionServiceRole675BB04A": {
-      "Type": "AWS::IAM::Role",
-      "Properties": {
-        "AssumeRolePolicyDocument": {
-          "Statement": [
-            {
-              "Action": "sts:AssumeRole",
-              "Effect": "Allow",
-              "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "lambda.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
-              }
-            }
-          ],
-          "Version": "2012-10-17"
-        },
-        "ManagedPolicyArns": [
-          {
-            "Fn::Join": [
-              "",
-              [
-                "arn:",
-                {
-                  "Ref": "AWS::Partition"
-                },
-                ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-              ]
-            ]
-          }
-        ]
-      }
-    },
-    "Function76856677": {
-      "Type": "AWS::Lambda::Function",
-      "Properties": {
-        "Code": {
-          "ZipFile": "exports.handler = async (event) => event;"
-        },
-        "Handler": "index.handler",
-        "Role": {
-          "Fn::GetAtt": [
-            "FunctionServiceRole675BB04A",
-            "Arn"
-          ]
-        },
-        "Runtime": "nodejs8.10"
-      },
-      "DependsOn": [
-        "FunctionServiceRole675BB04A"
-      ]
-    },
-    "FunctionAllowSes1829904A": {
-      "Type": "AWS::Lambda::Permission",
-      "Properties": {
-        "Action": "lambda:InvokeFunction",
-        "FunctionName": {
-          "Fn::GetAtt": [
-            "Function76856677",
-            "Arn"
-          ]
-        },
-        "Principal": "ses.amazonaws.com",
-        "SourceAccount": {
-          "Ref": "AWS::AccountId"
-        }
-      }
-    },
-    "Bucket83908E77": {
-      "Type": "AWS::S3::Bucket",
-      "DeletionPolicy": "Retain",
-      "UpdateReplacePolicy": "Retain"
-    },
-    "BucketPolicyE9A3008A": {
-      "Type": "AWS::S3::BucketPolicy",
-      "Properties": {
-        "Bucket": {
-          "Ref": "Bucket83908E77"
-        },
-        "PolicyDocument": {
-          "Statement": [
-            {
-              "Action": "s3:PutObject",
-              "Condition": {
-                "StringEquals": {
-                  "aws:Referer": {
-                    "Ref": "AWS::AccountId"
-                  }
-                }
-              },
-              "Effect": "Allow",
-              "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "ses.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
-              },
-              "Resource": {
-                "Fn::Join": [
-                  "",
-                  [
-                    {
-                      "Fn::GetAtt": [
-                        "Bucket83908E77",
-                        "Arn"
-                      ]
-                    },
-                    "/emails/*"
-                  ]
-                ]
-              }
-            }
-          ],
-          "Version": "2012-10-17"
-        }
-      }
-    },
-    "Key961B73FD": {
-      "Type": "AWS::KMS::Key",
-      "Properties": {
-        "KeyPolicy": {
-          "Statement": [
-            {
-              "Action": [
-                "kms:Create*",
-                "kms:Describe*",
-                "kms:Enable*",
-                "kms:List*",
-                "kms:Put*",
-                "kms:Update*",
-                "kms:Revoke*",
-                "kms:Disable*",
-                "kms:Get*",
-                "kms:Delete*",
-                "kms:ScheduleKeyDeletion",
-                "kms:CancelKeyDeletion"
-              ],
-              "Effect": "Allow",
-              "Principal": {
-                "AWS": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "arn:",
-                      {
-                        "Ref": "AWS::Partition"
-                      },
-                      ":iam::",
-                      {
-                        "Ref": "AWS::AccountId"
-                      },
-                      ":root"
-                    ]
-                  ]
-                }
-              },
-              "Resource": "*"
-            },
-            {
-              "Action": [
-                "km:Encrypt",
-                "kms:GenerateDataKey"
-              ],
-              "Condition": {
-                "Null": {
-                  "kms:EncryptionContext:aws:ses:rule-name": "false",
-                  "kms:EncryptionContext:aws:ses:message-id": "false"
-                },
-                "StringEquals": {
-                  "kms:EncryptionContext:aws:ses:source-account": {
-                    "Ref": "AWS::AccountId"
-                  }
-                }
-              },
-              "Effect": "Allow",
-              "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "ses.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
-              },
-              "Resource": "*"
-            }
-          ],
-          "Version": "2012-10-17"
-        }
-      },
-      "DeletionPolicy": "Retain",
-      "UpdateReplacePolicy": "Retain"
-    },
     "RuleSetE30C6C48": {
       "Type": "AWS::SES::ReceiptRuleSet"
     },
@@ -247,64 +32,6 @@
       "Type": "AWS::SES::ReceiptRule",
       "Properties": {
         "Rule": {
-          "Actions": [
-            {
-              "AddHeaderAction": {
-                "HeaderName": "X-My-Header",
-                "HeaderValue": "value"
-              }
-            },
-            {
-              "LambdaAction": {
-                "FunctionArn": {
-                  "Fn::GetAtt": [
-                    "Function76856677",
-                    "Arn"
-                  ]
-                },
-                "InvocationType": "RequestResponse",
-                "TopicArn": {
-                  "Ref": "TopicBFC7AF6E"
-                }
-              }
-            },
-            {
-              "S3Action": {
-                "BucketName": {
-                  "Ref": "Bucket83908E77"
-                },
-                "KmsKeyArn": {
-                  "Fn::GetAtt": [
-                    "Key961B73FD",
-                    "Arn"
-                  ]
-                },
-                "ObjectKeyPrefix": "emails/",
-                "TopicArn": {
-                  "Ref": "TopicBFC7AF6E"
-                }
-              }
-            },
-            {
-              "SNSAction": {
-                "Encoding": "Base64",
-                "TopicArn": {
-                  "Ref": "TopicBFC7AF6E"
-                }
-              }
-            },
-            {
-              "BounceAction": {
-                "Message": "Message content rejected",
-                "Sender": "cdk-ses-receipt-test@yopmail.com",
-                "SmtpReplyCode": "500",
-                "StatusCode": "5.6.1",
-                "TopicArn": {
-                  "Ref": "TopicBFC7AF6E"
-                }
-              }
-            }
-          ],
           "Enabled": true,
           "Name": "FirstRule",
           "Recipients": [
@@ -325,16 +52,6 @@
       "Type": "AWS::SES::ReceiptRule",
       "Properties": {
         "Rule": {
-          "Actions": [
-            {
-              "StopAction": {
-                "Scope": "RuleSet",
-                "TopicArn": {
-                  "Ref": "TopicBFC7AF6E"
-                }
-              }
-            }
-          ],
           "Enabled": true
         },
         "RuleSetName": {
@@ -354,17 +71,7 @@
               "Action": "sts:AssumeRole",
               "Effect": "Allow",
               "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "lambda.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
+                "Service": "lambda.amazonaws.com"
               }
             }
           ],
@@ -390,16 +97,51 @@
       "Type": "AWS::Lambda::Function",
       "Properties": {
         "Code": {
-          "ZipFile": "exports.handler = function dropSpamCode(event, _, callback) {\n    console.log('Spam filter');\n    const sesNotification = event.Records[0].ses;\n    console.log(\"SES Notification:\\n\", JSON.stringify(sesNotification, null, 2));\n    // Check if any spam check failed\n    if (sesNotification.receipt.spfVerdict.status === 'FAIL'\n        || sesNotification.receipt.dkimVerdict.status === 'FAIL'\n        || sesNotification.receipt.spamVerdict.status === 'FAIL'\n        || sesNotification.receipt.virusVerdict.status === 'FAIL') {\n        console.log('Dropping spam');\n        // Stop processing rule set, dropping message\n        callback(null, { disposition: 'STOP_RULE_SET' });\n    }\n    else {\n        callback(null, null);\n    }\n}"
+          "S3Bucket": {
+            "Ref": "AssetParameters96d0b6be9a64ae309bf89a86f5515453f0fa1d07b4f6b37198051cc98e251f34S3Bucket6AFCBA5F"
+          },
+          "S3Key": {
+            "Fn::Join": [
+              "",
+              [
+                {
+                  "Fn::Select": [
+                    0,
+                    {
+                      "Fn::Split": [
+                        "||",
+                        {
+                          "Ref": "AssetParameters96d0b6be9a64ae309bf89a86f5515453f0fa1d07b4f6b37198051cc98e251f34S3VersionKey02BA9086"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Fn::Select": [
+                    1,
+                    {
+                      "Fn::Split": [
+                        "||",
+                        {
+                          "Ref": "AssetParameters96d0b6be9a64ae309bf89a86f5515453f0fa1d07b4f6b37198051cc98e251f34S3VersionKey02BA9086"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            ]
+          }
         },
-        "Handler": "index.handler",
         "Role": {
           "Fn::GetAtt": [
             "SingletonLambda224e77f9a32e4b4dac32983477abba16ServiceRole3037F5B4",
             "Arn"
           ]
         },
-        "Runtime": "nodejs8.10"
+        "Handler": "index.handler",
+        "Runtime": "nodejs14.x"
       },
       "DependsOn": [
         "SingletonLambda224e77f9a32e4b4dac32983477abba16ServiceRole3037F5B4"
@@ -442,6 +184,20 @@
           }
         }
       }
+    }
+  },
+  "Parameters": {
+    "AssetParameters96d0b6be9a64ae309bf89a86f5515453f0fa1d07b4f6b37198051cc98e251f34S3Bucket6AFCBA5F": {
+      "Type": "String",
+      "Description": "S3 bucket for asset \"96d0b6be9a64ae309bf89a86f5515453f0fa1d07b4f6b37198051cc98e251f34\""
+    },
+    "AssetParameters96d0b6be9a64ae309bf89a86f5515453f0fa1d07b4f6b37198051cc98e251f34S3VersionKey02BA9086": {
+      "Type": "String",
+      "Description": "S3 key for asset version \"96d0b6be9a64ae309bf89a86f5515453f0fa1d07b4f6b37198051cc98e251f34\""
+    },
+    "AssetParameters96d0b6be9a64ae309bf89a86f5515453f0fa1d07b4f6b37198051cc98e251f34ArtifactHash6BE57680": {
+      "Type": "String",
+      "Description": "Artifact hash for asset \"96d0b6be9a64ae309bf89a86f5515453f0fa1d07b4f6b37198051cc98e251f34\""
     }
   }
 }

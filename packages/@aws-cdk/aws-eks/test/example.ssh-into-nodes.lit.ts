@@ -1,6 +1,6 @@
-import ec2 = require('@aws-cdk/aws-ec2');
-import cdk = require('@aws-cdk/core');
-import eks = require('../lib');
+import * as ec2 from '@aws-cdk/aws-ec2';
+import * as cdk from '@aws-cdk/core';
+import * as eks from '../lib';
 
 class EksClusterStack extends cdk.Stack {
   constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
@@ -9,11 +9,12 @@ class EksClusterStack extends cdk.Stack {
     const vpc = new ec2.Vpc(this, 'VPC');
 
     const cluster = new eks.Cluster(this, 'EKSCluster', {
-      vpc
+      vpc,
+      version: eks.KubernetesVersion.V1_19,
     });
 
     /// !show
-    const asg = cluster.addCapacity('Nodes', {
+    const asg = cluster.addAutoScalingGroupCapacity('Nodes', {
       instanceType: new ec2.InstanceType('t2.medium'),
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       keyName: 'my-key-name',

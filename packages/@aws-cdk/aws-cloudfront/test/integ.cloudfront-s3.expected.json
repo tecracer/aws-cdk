@@ -1,9 +1,9 @@
 {
   "Resources": {
     "Bucket83908E77": {
-      "DeletionPolicy": "Delete",
+      "Type": "AWS::S3::Bucket",
       "UpdateReplacePolicy": "Delete",
-      "Type": "AWS::S3::Bucket"
+      "DeletionPolicy": "Delete"
     },
     "BucketPolicyE9A3008A": {
       "Type": "AWS::S3::BucketPolicy",
@@ -14,41 +14,39 @@
         "PolicyDocument": {
           "Statement": [
             {
-              "Action": [
-                "s3:Get*",
-                "s3:List*"
-              ],
+              "Action": "s3:GetObject",
               "Effect": "Allow",
               "Principal": {
-                "CanonicalUser": {
-                  "Fn::GetAtt": [
-                    "OAI",
-                    "S3CanonicalUserId"
-                  ]
-                }
-              },
-              "Resource": [
-                {
-                  "Fn::GetAtt": [
-                    "Bucket83908E77",
-                    "Arn"
-                  ]
-                },
-                {
+                "AWS": {
                   "Fn::Join": [
                     "",
                     [
+                      "arn:",
                       {
-                        "Fn::GetAtt": [
-                          "Bucket83908E77",
-                          "Arn"
-                        ]
+                        "Ref": "AWS::Partition"
                       },
-                      "/*"
+                      ":iam::cloudfront:user/CloudFront Origin Access Identity ",
+                      {
+                        "Ref": "OAI"
+                      }
                     ]
                   ]
                 }
-              ]
+              },
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    {
+                      "Fn::GetAtt": [
+                        "Bucket83908E77",
+                        "Arn"
+                      ]
+                    },
+                    "/*"
+                  ]
+                ]
+              }
             }
           ],
           "Version": "2012-10-17"
@@ -59,7 +57,7 @@
       "Type": "AWS::CloudFront::CloudFrontOriginAccessIdentity",
       "Properties": {
         "CloudFrontOriginAccessIdentityConfig": {
-          "Comment": "Allows CloudFront to reach to the bucket!"
+          "Comment": "Allows CloudFront to reach the bucket!"
         }
       }
     },
@@ -67,7 +65,6 @@
       "Type": "AWS::CloudFront::Distribution",
       "Properties": {
         "DistributionConfig": {
-          "CacheBehaviors": [],
           "DefaultCacheBehavior": {
             "AllowedMethods": [
               "GET",
@@ -77,6 +74,7 @@
               "GET",
               "HEAD"
             ],
+            "Compress": true,
             "ForwardedValues": {
               "Cookies": {
                 "Forward": "none"
@@ -92,6 +90,8 @@
           "IPV6Enabled": true,
           "Origins": [
             {
+              "ConnectionAttempts": 3,
+              "ConnectionTimeout": 10,
               "DomainName": {
                 "Fn::GetAtt": [
                   "Bucket83908E77",

@@ -1,5 +1,6 @@
-import kms = require('@aws-cdk/aws-kms');
-import { Construct, Duration, Stack, Token } from '@aws-cdk/core';
+import * as kms from '@aws-cdk/aws-kms';
+import { Duration, RemovalPolicy, Stack, Token } from '@aws-cdk/core';
+import { Construct } from 'constructs';
 import { IQueue, QueueAttributes, QueueBase } from './queue-base';
 import { CfnQueue } from './sqs.generated';
 import { validateProps } from './validate-props';
@@ -97,9 +98,8 @@ export interface QueueProps {
    * turn will be encrypted using this key, and reused for a maximum of
    * `dataKeyReuseSecs` seconds.
    *
-   * The 'encryption' property must be either not specified or set to "Kms".
-   * An error will be emitted if encryption is set to "Unencrypted" or
-   * "KmsManaged".
+   * If the 'encryptionMasterKey' property is set, 'encryption' type will be
+   * implicitly set to "KMS".
    *
    * @default If encryption is set to KMS and not specified, a key will be created.
    */
@@ -137,6 +137,18 @@ export interface QueueProps {
    * @default false
    */
   readonly contentBasedDeduplication?: boolean;
+
+  /**
+   * Policy to apply when the user pool is removed from the stack
+   *
+   * Even though queues are technically stateful, their contents are transient and it
+   * is common to add and remove Queues while rearchitecting your application. The
+   * default is therefore `DESTROY`. Change it to `RETAIN` if the messages are so
+   * valuable that accidentally losing them would be unacceptable.
+   *
+   * @default RemovalPolicy.DESTROY
+   */
+  readonly removalPolicy?: RemovalPolicy;
 }
 
 /**
@@ -181,6 +193,13 @@ export enum QueueEncryption {
  */
 export class Queue extends QueueBase {
 
+  /**
+   * Import an existing SQS queue provided an ARN
+   *
+   * @param scope The parent creating construct
+   * @param id The construct's name
+   * @param queueArn queue ARN (i.e. arn:aws:sqs:us-east-2:444455556666:queue1)
+   */
   public static fromQueueArn(scope: Construct, id: string, queueArn: string): IQueue {
     return Queue.fromQueueAttributes(scope, id, { queueArn });
   }
@@ -190,8 +209,9 @@ export class Queue extends QueueBase {
    */
   public static fromQueueAttributes(scope: Construct, id: string, attrs: QueueAttributes): IQueue {
     const stack = Stack.of(scope);
-    const queueName = attrs.queueName || stack.parseArn(attrs.queueArn).resource;
-    const queueUrl = attrs.queueUrl || `https://sqs.${stack.region}.${stack.urlSuffix}/${stack.account}/${queueName}`;
+    const parsedArn = stack.parseArn(attrs.queueArn);
+    const queueName = attrs.queueName || parsedArn.resource;
+    const queueUrl = attrs.queueUrl || `https://sqs.${parsedArn.region}.${stack.urlSuffix}/${parsedArn.account}/${queueName}`;
 
     class Import extends QueueBase {
       public readonly queueArn = attrs.queueArn; // arn:aws:sqs:us-east-1:123456789012:queue1
@@ -200,6 +220,7 @@ export class Queue extends QueueBase {
       public readonly encryptionMasterKey = attrs.keyArn
         ? kms.Key.fromKeyArn(this, 'Key', attrs.keyArn)
         : undefined;
+      public readonly fifo = queueName.endsWith('.fifo') ? true : false;
 
       protected readonly autoCreatePolicy = false;
     }
@@ -227,6 +248,11 @@ export class Queue extends QueueBase {
    */
   public readonly encryptionMasterKey?: kms.IKey;
 
+  /**
+   * Whether this queue is an Amazon SQS FIFO queue. If false, this is a standard queue.
+   */
+  public readonly fifo: boolean;
+
   protected readonly autoCreatePolicy = true;
 
   constructor(scope: Construct, id: string, props: QueueProps = {}) {
@@ -237,17 +263,20 @@ export class Queue extends QueueBase {
     validateProps(props);
 
     const redrivePolicy = props.deadLetterQueue
-              ? {
-                deadLetterTargetArn: props.deadLetterQueue.queue.queueArn,
-                maxReceiveCount: props.deadLetterQueue.maxReceiveCount
-                }
-              : undefined;
+      ? {
+        deadLetterTargetArn: props.deadLetterQueue.queue.queueArn,
+        maxReceiveCount: props.deadLetterQueue.maxReceiveCount,
+      }
+      : undefined;
 
     const { encryptionMasterKey, encryptionProps } = _determineEncryptionProps.call(this);
 
+    const fifoProps = this.determineFifoProps(props);
+    this.fifo = fifoProps.fifoQueue || false;
+
     const queue = new CfnQueue(this, 'Resource', {
       queueName: this.physicalName,
-      ...this.determineFifoProps(props),
+      ...fifoProps,
       ...encryptionProps,
       redrivePolicy,
       delaySeconds: props.deliveryDelay && props.deliveryDelay.toSeconds(),
@@ -256,6 +285,7 @@ export class Queue extends QueueBase {
       receiveMessageWaitTimeSeconds: props.receiveMessageWaitTime && props.receiveMessageWaitTime.toSeconds(),
       visibilityTimeout: props.visibilityTimeout && props.visibilityTimeout.toSeconds(),
     });
+    queue.applyRemovalPolicy(props.removalPolicy ?? RemovalPolicy.DESTROY);
 
     this.queueArn = this.getResourceArnAttribute(queue.attrArn, {
       service: 'sqs',
@@ -277,28 +307,25 @@ export class Queue extends QueueBase {
       }
 
       if (encryption === QueueEncryption.KMS_MANAGED) {
-        const masterKey = kms.Key.fromKeyArn(this, 'Key', 'alias/aws/sqs');
-
         return {
-          encryptionMasterKey: masterKey,
           encryptionProps: {
             kmsMasterKeyId: 'alias/aws/sqs',
-            kmsDataKeyReusePeriodSeconds: props.dataKeyReuse && props.dataKeyReuse.toSeconds()
-          }
+            kmsDataKeyReusePeriodSeconds: props.dataKeyReuse && props.dataKeyReuse.toSeconds(),
+          },
         };
       }
 
       if (encryption === QueueEncryption.KMS) {
         const masterKey = props.encryptionMasterKey || new kms.Key(this, 'Key', {
-          description: `Created by ${this.node.path}`
+          description: `Created by ${this.node.path}`,
         });
 
         return {
           encryptionMasterKey: masterKey,
           encryptionProps: {
             kmsMasterKeyId: masterKey.keyArn,
-            kmsDataKeyReusePeriodSeconds: props.dataKeyReuse && props.dataKeyReuse.toSeconds()
-          }
+            kmsDataKeyReusePeriodSeconds: props.dataKeyReuse && props.dataKeyReuse.toSeconds(),
+          },
         };
       }
 

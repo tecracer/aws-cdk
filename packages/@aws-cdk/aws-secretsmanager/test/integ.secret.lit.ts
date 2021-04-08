@@ -1,6 +1,6 @@
-import iam = require('@aws-cdk/aws-iam');
-import cdk = require('@aws-cdk/core');
-import secretsManager = require('../lib');
+import * as iam from '@aws-cdk/aws-iam';
+import * as cdk from '@aws-cdk/core';
+import * as secretsmanager from '../lib';
 
 class SecretsManagerStack extends cdk.Stack {
   constructor(scope: cdk.App, id: string) {
@@ -10,24 +10,24 @@ class SecretsManagerStack extends cdk.Stack {
 
     /// !show
     // Default secret
-    const secret = new secretsManager.Secret(this, 'Secret');
+    const secret = new secretsmanager.Secret(this, 'Secret');
     secret.grantRead(role);
 
     new iam.User(this, 'User', {
-      password: secret.secretValue
+      password: secret.secretValue,
     });
 
     // Templated secret
-    const templatedSecret = new secretsManager.Secret(this, 'TemplatedSecret', {
+    const templatedSecret = new secretsmanager.Secret(this, 'TemplatedSecret', {
       generateSecretString: {
         secretStringTemplate: JSON.stringify({ username: 'user' }),
-        generateStringKey: 'password'
-      }
+        generateStringKey: 'password',
+      },
     });
 
     new iam.User(this, 'OtherUser', {
       userName: templatedSecret.secretValueFromJson('username').toString(),
-      password: templatedSecret.secretValueFromJson('password')
+      password: templatedSecret.secretValueFromJson('password'),
     });
     /// !hide
   }

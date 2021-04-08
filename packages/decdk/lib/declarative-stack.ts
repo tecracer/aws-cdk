@@ -1,6 +1,6 @@
-import cdk = require('@aws-cdk/core');
-import reflect = require('jsii-reflect');
-import jsonschema = require('jsonschema');
+import * as cdk from '@aws-cdk/core';
+import * as reflect from 'jsii-reflect';
+import * as jsonschema from 'jsonschema';
 import { renderFullSchema } from './cdk-schema';
 import { isConstruct, isDataType, isEnumLikeClass, isSerializableInterface, SchemaContext, schemaForPolymorphic } from './jsii2schema';
 
@@ -382,7 +382,7 @@ function invokeMethod(stack: cdk.Stack, method: reflect.Callable, parameters: an
  * an `Fn::GetAtt`.
  */
 function deconstructGetAtt(stack: cdk.Stack, id: string, attribute: string) {
-  return cdk.Lazy.stringValue({ produce: () => {
+  return cdk.Lazy.string({ produce: () => {
     const res = stack.node.tryFindChild(id);
     if (!res) {
       const include = stack.node.tryFindChild('Include') as cdk.CfnInclude;

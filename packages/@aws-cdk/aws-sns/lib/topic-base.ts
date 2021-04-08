@@ -1,16 +1,27 @@
-import iam = require('@aws-cdk/aws-iam');
-import { IResource, Resource } from '@aws-cdk/core';
+import * as iam from '@aws-cdk/aws-iam';
+import { IResource, Resource, Token } from '@aws-cdk/core';
 import { TopicPolicy } from './policy';
 import { ITopicSubscription } from './subscriber';
 import { Subscription } from './subscription';
 
+// keep this import separate from other imports to reduce chance for merge conflicts with v2-main
+// eslint-disable-next-line no-duplicate-imports, import/order
+import { Construct } from '@aws-cdk/core';
+
+/**
+ * Represents an SNS topic
+ */
 export interface ITopic extends IResource {
   /**
+   * The ARN of the topic
+   *
    * @attribute
    */
   readonly topicArn: string;
 
   /**
+   * The name of the topic
+   *
    * @attribute
    */
   readonly topicName: string;
@@ -25,9 +36,9 @@ export interface ITopic extends IResource {
    *
    * If this topic was created in this stack (`new Topic`), a topic policy
    * will be automatically created upon the first call to `addToPolicy`. If
-   * the topic is improted (`Topic.import`), then this is a no-op.
+   * the topic is imported (`Topic.import`), then this is a no-op.
    */
-  addToResourcePolicy(statement: iam.PolicyStatement): void;
+  addToResourcePolicy(statement: iam.PolicyStatement): iam.AddToResourcePolicyResult;
 
   /**
    * Grant topic publishing permissions to the given identity
@@ -59,7 +70,10 @@ export abstract class TopicBase extends Resource implements ITopic {
     const subscriptionConfig = subscription.bind(this);
 
     const scope = subscriptionConfig.subscriberScope || this;
-    const id = subscriptionConfig.subscriberId;
+    let id = subscriptionConfig.subscriberId;
+    if (Token.isUnresolved(subscriptionConfig.subscriberId)) {
+      id = this.nextTokenId(scope);
+    }
 
     // We use the subscriber's id as the construct id. There's no meaning
     // to subscribing the same subscriber twice on the same topic.
@@ -78,16 +92,24 @@ export abstract class TopicBase extends Resource implements ITopic {
    *
    * If this topic was created in this stack (`new Topic`), a topic policy
    * will be automatically created upon the first call to `addToPolicy`. If
-   * the topic is improted (`Topic.import`), then this is a no-op.
+   * the topic is imported (`Topic.import`), then this is a no-op.
    */
-  public addToResourcePolicy(statement: iam.PolicyStatement) {
+  public addToResourcePolicy(statement: iam.PolicyStatement): iam.AddToResourcePolicyResult {
     if (!this.policy && this.autoCreatePolicy) {
-      this.policy = new TopicPolicy(this, 'Policy', { topics: [ this ] });
+      this.policy = new TopicPolicy(this, 'Policy', { topics: [this] });
     }
 
     if (this.policy) {
       this.policy.document.addStatements(statement);
+      return { statementAdded: true, policyDependable: this.policy };
     }
+    return { statementAdded: false };
+  }
+
+  protected validate(): string[] {
+    const errors = super.validate();
+    errors.push(...this.policy?.document.validateForResourcePolicy() || []);
+    return errors;
   }
 
   /**
@@ -100,6 +122,23 @@ export abstract class TopicBase extends Resource implements ITopic {
       resourceArns: [this.topicArn],
       resource: this,
     });
+  }
+
+  private nextTokenId(scope: Construct) {
+    let nextSuffix = 1;
+    const re = /TokenSubscription:([\d]*)/gm;
+    // Search through the construct and all of its children
+    // for previous subscriptions that match our regex pattern
+    for (const source of scope.node.findAll()) {
+      const m = re.exec(source.node.id); // Use regex to find a match
+      if (m !== null) { // if we found a match
+        const matchSuffix = parseInt(m[1], 10); // get the suffix for that match (as integer)
+        if (matchSuffix >= nextSuffix) { // check if the match suffix is larger or equal to currently proposed suffix
+          nextSuffix = matchSuffix + 1; // increment the suffix
+        }
+      }
+    }
+    return `TokenSubscription:${nextSuffix}`;
   }
 
 }

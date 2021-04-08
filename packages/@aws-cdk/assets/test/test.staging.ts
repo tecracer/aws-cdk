@@ -1,8 +1,8 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { App, Stack } from '@aws-cdk/core';
-import cxapi = require('@aws-cdk/cx-api');
-import fs = require('fs');
+import * as cxapi from '@aws-cdk/cx-api';
 import { Test } from 'nodeunit';
-import path = require('path');
 import { Staging } from '../lib';
 
 export = {
@@ -14,9 +14,9 @@ export = {
     // WHEN
     const staging = new Staging(stack, 's1', { sourcePath });
 
-    test.deepEqual(staging.sourceHash, '2f37f937c51e2c191af66acf9b09f548926008ec68c575bd2ee54b6e997c0e00');
+    test.deepEqual(staging.assetHash, '2f37f937c51e2c191af66acf9b09f548926008ec68c575bd2ee54b6e997c0e00');
     test.deepEqual(staging.sourcePath, sourcePath);
-    test.deepEqual(stack.resolve(staging.stagedPath), 'asset.2f37f937c51e2c191af66acf9b09f548926008ec68c575bd2ee54b6e997c0e00');
+    test.deepEqual(staging.relativeStagedPath(stack), 'asset.2f37f937c51e2c191af66acf9b09f548926008ec68c575bd2ee54b6e997c0e00');
     test.done();
   },
 
@@ -29,9 +29,9 @@ export = {
     // WHEN
     const staging = new Staging(stack, 's1', { sourcePath });
 
-    test.deepEqual(staging.sourceHash, '2f37f937c51e2c191af66acf9b09f548926008ec68c575bd2ee54b6e997c0e00');
+    test.deepEqual(staging.assetHash, '2f37f937c51e2c191af66acf9b09f548926008ec68c575bd2ee54b6e997c0e00');
     test.deepEqual(staging.sourcePath, sourcePath);
-    test.deepEqual(stack.resolve(staging.stagedPath), sourcePath);
+    test.deepEqual(staging.absoluteStagedPath, sourcePath);
     test.done();
   },
 
@@ -53,8 +53,26 @@ export = {
       'asset.af10ac04b3b607b0f8659c8f0cee8c343025ee75baf0b146f10f0e5311d2c46b.gz',
       'cdk.out',
       'manifest.json',
-      'stack.template.json'
+      'stack.template.json',
+      'tree.json',
     ]);
     test.done();
-  }
+  },
+
+  'allow specifying extra data to include in the source hash'(test: Test) {
+    // GIVEN
+    const app = new App();
+    const stack = new Stack(app, 'stack');
+    const directory = path.join(__dirname, 'fs', 'fixtures', 'test1');
+
+    // WHEN
+    const withoutExtra = new Staging(stack, 'withoutExtra', { sourcePath: directory });
+    const withExtra = new Staging(stack, 'withExtra', { sourcePath: directory, extraHash: 'boom' });
+
+    // THEN
+    test.notEqual(withoutExtra.assetHash, withExtra.assetHash);
+    test.deepEqual(withoutExtra.assetHash, '2f37f937c51e2c191af66acf9b09f548926008ec68c575bd2ee54b6e997c0e00');
+    test.deepEqual(withExtra.assetHash, 'c95c915a5722bb9019e2c725d11868e5a619b55f36172f76bcbcaa8bb2d10c5f');
+    test.done();
+  },
 };

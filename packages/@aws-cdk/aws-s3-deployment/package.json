@@ -1,6 +1,6 @@
 {
   "name": "@aws-cdk/aws-s3-deployment",
-  "version": "1.0.0",
+  "version": "0.0.0",
   "description": "Constructs for deploying contents to S3 buckets",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -11,22 +11,24 @@
         "package": "software.amazon.awscdk.services.s3.deployment",
         "maven": {
           "groupId": "software.amazon.awscdk",
-          "artifactId": "s3-deployment",
-          "versionSuffix": ".DEVPREVIEW"
+          "artifactId": "s3-deployment"
         }
       },
       "dotnet": {
         "namespace": "Amazon.CDK.AWS.S3.Deployment",
         "packageId": "Amazon.CDK.AWS.S3.Deployment",
-        "signAssembly": true,
-        "assemblyOriginatorKeyFile": "../../key.snk",
-        "versionSuffix": "-devpreview"
+        "iconUrl": "https://raw.githubusercontent.com/aws/aws-cdk/master/logo/default-256-dark.png"
       },
       "python": {
         "distName": "aws-cdk.aws-s3-deployment",
-        "module": "aws_cdk.aws_s3_deployment"
+        "module": "aws_cdk.aws_s3_deployment",
+        "classifiers": [
+          "Framework :: AWS CDK",
+          "Framework :: AWS CDK :: 1"
+        ]
       }
-    }
+    },
+    "projectReferences": true
   },
   "repository": {
     "type": "git",
@@ -42,16 +44,16 @@
     "pkglint": "pkglint -f",
     "package": "cdk-package",
     "awslint": "cdk-awslint",
-    "build+test+package": "npm run build+test && npm run package",
-    "build+test": "npm run build && npm test"
+    "build+test+package": "yarn build+test && yarn package",
+    "build+test": "yarn build && yarn test",
+    "compat": "cdk-compat",
+    "rosetta:extract": "yarn --silent jsii-rosetta extract"
   },
   "cdk-build": {
-    "pre": [
-      "/bin/bash lambda/build.sh"
-    ],
-    "test": [
-      "/bin/bash lambda/test.sh"
-    ]
+    "jest": true,
+    "env": {
+      "AWSLINT_BASE_CONSTRUCT": true
+    }
   },
   "keywords": [
     "aws",
@@ -65,8 +67,7 @@
       "test/**",
       "examples/**",
       "lib/*.generated.js",
-      "build-tools/**",
-      "lambda/**"
+      "build-tools/**"
     ]
   },
   "author": {
@@ -76,30 +77,46 @@
   },
   "license": "Apache-2.0",
   "devDependencies": {
-    "@aws-cdk/assert": "^1.0.0",
-    "cdk-build-tools": "^1.0.0",
-    "cdk-integ-tools": "^1.0.0",
-    "pkglint": "^1.0.0"
+    "@aws-cdk/cx-api": "0.0.0",
+    "@types/jest": "^26.0.22",
+    "cdk-build-tools": "0.0.0",
+    "cdk-integ-tools": "0.0.0",
+    "jest": "^26.6.3",
+    "pkglint": "0.0.0",
+    "@aws-cdk/assert-internal": "0.0.0"
   },
   "dependencies": {
-    "@aws-cdk/aws-cloudformation": "^1.0.0",
-    "@aws-cdk/aws-iam": "^1.0.0",
-    "@aws-cdk/aws-lambda": "^1.0.0",
-    "@aws-cdk/aws-s3": "^1.0.0",
-    "@aws-cdk/aws-s3-assets": "^1.0.0",
-    "@aws-cdk/core": "^1.0.0"
+    "@aws-cdk/aws-cloudfront": "0.0.0",
+    "@aws-cdk/aws-ec2": "0.0.0",
+    "@aws-cdk/aws-iam": "0.0.0",
+    "@aws-cdk/aws-lambda": "0.0.0",
+    "@aws-cdk/aws-s3": "0.0.0",
+    "@aws-cdk/aws-s3-assets": "0.0.0",
+    "@aws-cdk/lambda-layer-awscli": "0.0.0",
+    "@aws-cdk/core": "0.0.0",
+    "constructs": "^3.3.69"
   },
   "homepage": "https://github.com/aws/aws-cdk",
   "peerDependencies": {
-    "@aws-cdk/aws-cloudformation": "^1.0.0",
-    "@aws-cdk/aws-iam": "^1.0.0",
-    "@aws-cdk/aws-lambda": "^1.0.0",
-    "@aws-cdk/aws-s3": "^1.0.0",
-    "@aws-cdk/aws-s3-assets": "^1.0.0",
-    "@aws-cdk/core": "^1.0.0"
+    "@aws-cdk/aws-cloudfront": "0.0.0",
+    "@aws-cdk/aws-ec2": "0.0.0",
+    "@aws-cdk/aws-iam": "0.0.0",
+    "@aws-cdk/aws-lambda": "0.0.0",
+    "@aws-cdk/aws-s3": "0.0.0",
+    "@aws-cdk/aws-s3-assets": "0.0.0",
+    "@aws-cdk/lambda-layer-awscli": "0.0.0",
+    "@aws-cdk/core": "0.0.0",
+    "constructs": "^3.3.69"
   },
   "engines": {
-    "node": ">= 8.10.0"
+    "node": ">= 10.13.0 <13 || >=13.7.0"
   },
-  "stability": "experimental"
+  "stability": "stable",
+  "maturity": "stable",
+  "awscdkio": {
+    "announce": false
+  },
+  "publishConfig": {
+    "tag": "latest"
+  }
 }

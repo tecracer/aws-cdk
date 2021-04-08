@@ -1,55 +1,6 @@
+import * as cxschema from '@aws-cdk/cloud-assembly-schema';
 import { CloudAssembly } from './cloud-assembly';
-import { Environment, EnvironmentUtils } from './environment';
-import {
-  ERROR_METADATA_KEY,
-  INFO_METADATA_KEY,
-  MetadataEntry,
-  MetadataEntryResult,
-  SynthesisMessage,
-  SynthesisMessageLevel,
-  WARNING_METADATA_KEY } from './metadata';
-
-/**
- * Type of cloud artifact.
- */
-export enum ArtifactType {
-  NONE = 'none', // required due to a jsii bug
-
-  /**
-   * The artifact is an AWS CloudFormation stack.
-   */
-  AWS_CLOUDFORMATION_STACK = 'aws:cloudformation:stack',
-}
-
-/**
- * A manifest for a single artifact within the cloud assembly.
- */
-export interface ArtifactManifest {
-  /**
-   * The type of artifact.
-   */
-  readonly type: ArtifactType;
-
-  /**
-   * The environment into which this artifact is deployed.
-   */
-  readonly environment: string; // format: aws://account/region
-
-  /**
-   * Associated metadata.
-   */
-  readonly metadata?: { [path: string]: MetadataEntry[] };
-
-  /**
-   * IDs of artifacts that must be deployed before this artifact.
-   */
-  readonly dependencies?: string[];
-
-  /**
-   * The set of properties for this artifact (depends on type)
-   */
-  readonly properties?: { [name: string]: any };
-}
+import { MetadataEntryResult, SynthesisMessage, SynthesisMessageLevel } from './metadata';
 
 /**
  * Artifact properties for CloudFormation stacks.
@@ -64,6 +15,19 @@ export interface AwsCloudFormationStackProperties {
    * Values for CloudFormation stack parameters that should be passed when the stack is deployed.
    */
   readonly parameters?: { [id: string]: string };
+
+  /**
+   * The name to use for the CloudFormation stack.
+   * @default - name derived from artifact ID
+   */
+  readonly stackName?: string;
+
+  /**
+   * Whether to enable termination protection for this stack.
+   *
+   * @default false
+   */
+  readonly terminationProtection?: boolean;
 }
 
 /**
@@ -75,31 +39,32 @@ export class CloudArtifact {
    * @param assembly The cloud assembly from which to load the artifact
    * @param id The artifact ID
    * @param artifact The artifact manifest
+   * @returns the `CloudArtifact` that matches the artifact type or `undefined` if it's an artifact type that is unrecognized by this module.
    */
-  public static from(assembly: CloudAssembly, id: string, artifact: ArtifactManifest): CloudArtifact {
+  public static fromManifest(assembly: CloudAssembly, id: string, artifact: cxschema.ArtifactManifest): CloudArtifact | undefined {
     switch (artifact.type) {
-      case ArtifactType.AWS_CLOUDFORMATION_STACK:
+      case cxschema.ArtifactType.AWS_CLOUDFORMATION_STACK:
         return new CloudFormationStackArtifact(assembly, id, artifact);
-
+      case cxschema.ArtifactType.CDK_TREE:
+        return new TreeCloudArtifact(assembly, id, artifact);
+      case cxschema.ArtifactType.ASSET_MANIFEST:
+        return new AssetManifestArtifact(assembly, id, artifact);
+      case cxschema.ArtifactType.NESTED_CLOUD_ASSEMBLY:
+        return new NestedCloudAssemblyArtifact(assembly, id, artifact);
       default:
-        throw new Error(`unsupported artifact type: ${artifact.type}`);
+        return undefined;
     }
   }
 
   /**
    * The artifact's manifest
    */
-  public readonly manifest: ArtifactManifest;
+  public readonly manifest: cxschema.ArtifactManifest;
 
   /**
    * The set of messages extracted from the artifact's metadata.
    */
   public readonly messages: SynthesisMessage[];
-
-  /**
-   * The environment into which to deploy this artifact.
-   */
-  public readonly environment: Environment;
 
   /**
    * IDs of all dependencies. Used when topologically sorting the artifacts within the cloud assembly.
@@ -112,9 +77,8 @@ export class CloudArtifact {
    */
   private _deps?: CloudArtifact[];
 
-  protected constructor(public readonly assembly: CloudAssembly, public readonly id: string, manifest: ArtifactManifest) {
+  protected constructor(public readonly assembly: CloudAssembly, public readonly id: string, manifest: cxschema.ArtifactManifest) {
     this.manifest = manifest;
-    this.environment = EnvironmentUtils.parse(manifest.environment);
     this.messages = this.renderMessages();
     this._dependencyIDs = manifest.dependencies || [];
   }
@@ -126,7 +90,7 @@ export class CloudArtifact {
     if (this._deps) { return this._deps; }
 
     this._deps = this._dependencyIDs.map(id => {
-      const dep = this.assembly.artifacts.find(a => a.id === id);
+      const dep = this.assembly.tryGetArtifact(id);
       if (!dep) {
         throw new Error(`Artifact ${this.id} depends on non-existing artifact ${id}`);
       }
@@ -140,7 +104,7 @@ export class CloudArtifact {
    * @returns all the metadata entries of a specific type in this artifact.
    * @param type
    */
-  public findMetadataByType(type: string) {
+  public findMetadataByType(type: string): MetadataEntryResult[] {
     const result = new Array<MetadataEntryResult>();
     for (const path of Object.keys(this.manifest.metadata || {})) {
       for (const entry of (this.manifest.metadata || {})[path]) {
@@ -155,17 +119,17 @@ export class CloudArtifact {
   private renderMessages() {
     const messages = new Array<SynthesisMessage>();
 
-    for (const [ id, metadata ] of Object.entries(this.manifest.metadata || { })) {
+    for (const [id, metadata] of Object.entries(this.manifest.metadata || { })) {
       for (const entry of metadata) {
         let level: SynthesisMessageLevel;
         switch (entry.type) {
-          case WARNING_METADATA_KEY:
+          case cxschema.ArtifactMetadataEntryType.WARN:
             level = SynthesisMessageLevel.WARNING;
             break;
-          case ERROR_METADATA_KEY:
+          case cxschema.ArtifactMetadataEntryType.ERROR:
             level = SynthesisMessageLevel.ERROR;
             break;
-          case INFO_METADATA_KEY:
+          case cxschema.ArtifactMetadataEntryType.INFO:
             level = SynthesisMessageLevel.INFO;
             break;
           default:
@@ -181,4 +145,7 @@ export class CloudArtifact {
 }
 
 // needs to be defined at the end to avoid a cyclic dependency
-import { CloudFormationStackArtifact } from './cloudformation-artifact';
+import { AssetManifestArtifact } from './artifacts/asset-manifest-artifact';
+import { CloudFormationStackArtifact } from './artifacts/cloudformation-artifact';
+import { NestedCloudAssemblyArtifact } from './artifacts/nested-cloud-assembly-artifact';
+import { TreeCloudArtifact } from './artifacts/tree-cloud-artifact';

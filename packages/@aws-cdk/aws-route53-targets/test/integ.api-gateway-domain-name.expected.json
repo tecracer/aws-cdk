@@ -9,17 +9,7 @@
               "Action": "sts:AssumeRole",
               "Effect": "Allow",
               "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "lambda.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
+                "Service": "lambda.amazonaws.com"
               }
             }
           ],
@@ -54,167 +44,11 @@
             "Arn"
           ]
         },
-        "Runtime": "nodejs8.10"
+        "Runtime": "nodejs10.x"
       },
       "DependsOn": [
         "HandlerServiceRoleFCDC14AE"
       ]
-    },
-    "HandlerApiPermissionANY90312B89": {
-      "Type": "AWS::Lambda::Permission",
-      "Properties": {
-        "Action": "lambda:InvokeFunction",
-        "FunctionName": {
-          "Fn::GetAtt": [
-            "Handler886CB40B",
-            "Arn"
-          ]
-        },
-        "Principal": "apigateway.amazonaws.com",
-        "SourceArn": {
-          "Fn::Join": [
-            "",
-            [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:",
-              {
-                "Ref": "AWS::Region"
-              },
-              ":",
-              {
-                "Ref": "AWS::AccountId"
-              },
-              ":",
-              {
-                "Ref": "apiC8550315"
-              },
-              "/",
-              {
-                "Ref": "apiDeploymentStageprod896C8101"
-              },
-              "/*/"
-            ]
-          ]
-        }
-      }
-    },
-    "HandlerApiPermissionTestANY40D41BDC": {
-      "Type": "AWS::Lambda::Permission",
-      "Properties": {
-        "Action": "lambda:InvokeFunction",
-        "FunctionName": {
-          "Fn::GetAtt": [
-            "Handler886CB40B",
-            "Arn"
-          ]
-        },
-        "Principal": "apigateway.amazonaws.com",
-        "SourceArn": {
-          "Fn::Join": [
-            "",
-            [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:",
-              {
-                "Ref": "AWS::Region"
-              },
-              ":",
-              {
-                "Ref": "AWS::AccountId"
-              },
-              ":",
-              {
-                "Ref": "apiC8550315"
-              },
-              "/test-invoke-stage/*/"
-            ]
-          ]
-        }
-      }
-    },
-    "HandlerApiPermissionANYproxyDC4EA7A1": {
-      "Type": "AWS::Lambda::Permission",
-      "Properties": {
-        "Action": "lambda:InvokeFunction",
-        "FunctionName": {
-          "Fn::GetAtt": [
-            "Handler886CB40B",
-            "Arn"
-          ]
-        },
-        "Principal": "apigateway.amazonaws.com",
-        "SourceArn": {
-          "Fn::Join": [
-            "",
-            [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:",
-              {
-                "Ref": "AWS::Region"
-              },
-              ":",
-              {
-                "Ref": "AWS::AccountId"
-              },
-              ":",
-              {
-                "Ref": "apiC8550315"
-              },
-              "/",
-              {
-                "Ref": "apiDeploymentStageprod896C8101"
-              },
-              "/*/{proxy+}"
-            ]
-          ]
-        }
-      }
-    },
-    "HandlerApiPermissionTestANYproxyCF641E04": {
-      "Type": "AWS::Lambda::Permission",
-      "Properties": {
-        "Action": "lambda:InvokeFunction",
-        "FunctionName": {
-          "Fn::GetAtt": [
-            "Handler886CB40B",
-            "Arn"
-          ]
-        },
-        "Principal": "apigateway.amazonaws.com",
-        "SourceArn": {
-          "Fn::Join": [
-            "",
-            [
-              "arn:",
-              {
-                "Ref": "AWS::Partition"
-              },
-              ":execute-api:",
-              {
-                "Ref": "AWS::Region"
-              },
-              ":",
-              {
-                "Ref": "AWS::AccountId"
-              },
-              ":",
-              {
-                "Ref": "apiC8550315"
-              },
-              "/test-invoke-stage/*/{proxy+}"
-            ]
-          ]
-        }
-      }
     },
     "apiC8550315": {
       "Type": "AWS::ApiGateway::RestApi",
@@ -222,7 +56,7 @@
         "Name": "api"
       }
     },
-    "apiDeployment149F12949ab8cbc5717926c7a1a01815778330c4": {
+    "apiDeployment149F1294891f10d69bae7c4d19bdee7af013a950": {
       "Type": "AWS::ApiGateway::Deployment",
       "Properties": {
         "RestApiId": {
@@ -243,7 +77,7 @@
           "Ref": "apiC8550315"
         },
         "DeploymentId": {
-          "Ref": "apiDeployment149F12949ab8cbc5717926c7a1a01815778330c4"
+          "Ref": "apiDeployment149F1294891f10d69bae7c4d19bdee7af013a950"
         },
         "StageName": "prod"
       }
@@ -257,17 +91,7 @@
               "Action": "sts:AssumeRole",
               "Effect": "Allow",
               "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "apigateway.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
+                "Service": "apigateway.amazonaws.com"
               }
             }
           ],
@@ -318,6 +142,84 @@
         }
       }
     },
+    "apiproxyANYApiPermissionawscdkapigwaliasintegapiF4DF08ACANYproxy80933581": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "Handler886CB40B",
+            "Arn"
+          ]
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "apiC8550315"
+              },
+              "/",
+              {
+                "Ref": "apiDeploymentStageprod896C8101"
+              },
+              "/*/*"
+            ]
+          ]
+        }
+      }
+    },
+    "apiproxyANYApiPermissionTestawscdkapigwaliasintegapiF4DF08ACANYproxyCF8E3D8C": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "Handler886CB40B",
+            "Arn"
+          ]
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "apiC8550315"
+              },
+              "/test-invoke-stage/*/*"
+            ]
+          ]
+        }
+      }
+    },
     "apiproxyANY7F13F09C": {
       "Type": "AWS::ApiGateway::Method",
       "Properties": {
@@ -355,6 +257,84 @@
               ]
             ]
           }
+        }
+      }
+    },
+    "apiANYApiPermissionawscdkapigwaliasintegapiF4DF08ACANYBCED9DDA": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "Handler886CB40B",
+            "Arn"
+          ]
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "apiC8550315"
+              },
+              "/",
+              {
+                "Ref": "apiDeploymentStageprod896C8101"
+              },
+              "/*/"
+            ]
+          ]
+        }
+      }
+    },
+    "apiANYApiPermissionTestawscdkapigwaliasintegapiF4DF08ACANYC10548C8": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "Handler886CB40B",
+            "Arn"
+          ]
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "apiC8550315"
+              },
+              "/test-invoke-stage/*/"
+            ]
+          ]
         }
       }
     },

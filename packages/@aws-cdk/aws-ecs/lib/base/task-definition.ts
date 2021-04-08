@@ -1,8 +1,14 @@
-import iam = require('@aws-cdk/aws-iam');
-import { Construct, IResource, Lazy, Resource } from '@aws-cdk/core';
-import { ContainerDefinition, ContainerDefinitionOptions } from '../container-definition';
+import * as ec2 from '@aws-cdk/aws-ec2';
+import * as iam from '@aws-cdk/aws-iam';
+import { IResource, Lazy, Names, Resource } from '@aws-cdk/core';
+import { Construct } from 'constructs';
+import { ContainerDefinition, ContainerDefinitionOptions, PortMapping, Protocol } from '../container-definition';
 import { CfnTaskDefinition } from '../ecs.generated';
+import { FirelensLogRouter, FirelensLogRouterDefinitionOptions, FirelensLogRouterType, obtainDefaultFluentBitECRImage } from '../firelens-log-router';
+import { AwsLogDriver } from '../log-drivers/aws-log-driver';
 import { PlacementConstraint } from '../placement';
+import { ProxyConfiguration } from '../proxy-configuration/proxy-configuration';
+import { ImportedTaskDefinition } from './_imported-task-definition';
 
 /**
  * The interface for all task definitions.
@@ -33,6 +39,16 @@ export interface ITaskDefinition extends IResource {
    * Return true if the task definition can be run on a Fargate cluster
    */
   readonly isFargateCompatible: boolean;
+
+  /**
+   * The networking mode to use for the containers in the task.
+   */
+  readonly networkMode: NetworkMode;
+
+  /**
+   * The name of the IAM role that grants containers in the task permission to call AWS APIs on your behalf.
+   */
+  readonly taskRole: iam.IRole;
 }
 
 /**
@@ -62,6 +78,13 @@ export interface CommonTaskDefinitionProps {
    * @default - A task role is automatically created for you.
    */
   readonly taskRole?: iam.IRole;
+
+  /**
+   * The configuration details for the App Mesh proxy.
+   *
+   * @default - No proxy configuration.
+   */
+  readonly proxyConfiguration?: ProxyConfiguration;
 
   /**
    * The list of volume definitions for the task. For more information, see
@@ -110,9 +133,13 @@ export interface TaskDefinitionProps extends CommonTaskDefinitionProps {
    * which determines your range of valid values for the memory parameter:
    *
    * 256 (.25 vCPU) - Available memory values: 512 (0.5 GB), 1024 (1 GB), 2048 (2 GB)
+   *
    * 512 (.5 vCPU) - Available memory values: 1024 (1 GB), 2048 (2 GB), 3072 (3 GB), 4096 (4 GB)
+   *
    * 1024 (1 vCPU) - Available memory values: 2048 (2 GB), 3072 (3 GB), 4096 (4 GB), 5120 (5 GB), 6144 (6 GB), 7168 (7 GB), 8192 (8 GB)
+   *
    * 2048 (2 vCPU) - Available memory values: Between 4096 (4 GB) and 16384 (16 GB) in increments of 1024 (1 GB)
+   *
    * 4096 (4 vCPU) - Available memory values: Between 8192 (8 GB) and 30720 (30 GB) in increments of 1024 (1 GB)
    *
    * @default - CPU units are not specified.
@@ -127,20 +154,80 @@ export interface TaskDefinitionProps extends CommonTaskDefinitionProps {
    * which determines your range of valid values for the cpu parameter:
    *
    * 512 (0.5 GB), 1024 (1 GB), 2048 (2 GB) - Available cpu values: 256 (.25 vCPU)
+   *
    * 1024 (1 GB), 2048 (2 GB), 3072 (3 GB), 4096 (4 GB) - Available cpu values: 512 (.5 vCPU)
+   *
    * 2048 (2 GB), 3072 (3 GB), 4096 (4 GB), 5120 (5 GB), 6144 (6 GB), 7168 (7 GB), 8192 (8 GB) - Available cpu values: 1024 (1 vCPU)
+   *
    * Between 4096 (4 GB) and 16384 (16 GB) in increments of 1024 (1 GB) - Available cpu values: 2048 (2 vCPU)
+   *
    * Between 8192 (8 GB) and 30720 (30 GB) in increments of 1024 (1 GB) - Available cpu values: 4096 (4 vCPU)
    *
    * @default - Memory used by task is not specified.
    */
   readonly memoryMiB?: string;
+
+  /**
+   * The IPC resource namespace to use for the containers in the task.
+   *
+   * Not supported in Fargate and Windows containers.
+   *
+   * @default - IpcMode used by the task is not specified
+   */
+  readonly ipcMode?: IpcMode;
+
+  /**
+   * The process namespace to use for the containers in the task.
+   *
+   * Not supported in Fargate and Windows containers.
+   *
+   * @default - PidMode used by the task is not specified
+   */
+  readonly pidMode?: PidMode;
+}
+
+/**
+ * The common task definition attributes used across all types of task definitions.
+ */
+export interface CommonTaskDefinitionAttributes {
+  /**
+   * The arn of the task definition
+   */
+  readonly taskDefinitionArn: string;
+
+  /**
+   * The networking mode to use for the containers in the task.
+   *
+   * @default Network mode cannot be provided to the imported task.
+   */
+  readonly networkMode?: NetworkMode;
+
+  /**
+   * The name of the IAM role that grants containers in the task permission to call AWS APIs on your behalf.
+   *
+   * @default Permissions cannot be granted to the imported task.
+   */
+  readonly taskRole?: iam.IRole;
+}
+
+/**
+ *  A reference to an existing task definition
+ */
+export interface TaskDefinitionAttributes extends CommonTaskDefinitionAttributes {
+  /**
+   * What launch types this task definition should be compatible with.
+   *
+   * @default Compatibility.EC2_AND_FARGATE
+   */
+  readonly compatibility?: Compatibility;
 }
 
 abstract class TaskDefinitionBase extends Resource implements ITaskDefinition {
 
   public abstract readonly compatibility: Compatibility;
+  public abstract readonly networkMode: NetworkMode;
   public abstract readonly taskDefinitionArn: string;
+  public abstract readonly taskRole: iam.IRole;
   public abstract readonly executionRole?: iam.IRole;
 
   /**
@@ -169,13 +256,19 @@ export class TaskDefinition extends TaskDefinitionBase {
    * The task will have a compatibility of EC2+Fargate.
    */
   public static fromTaskDefinitionArn(scope: Construct, id: string, taskDefinitionArn: string): ITaskDefinition {
-    class Import extends TaskDefinitionBase {
-      public readonly taskDefinitionArn = taskDefinitionArn;
-      public readonly compatibility = Compatibility.EC2_AND_FARGATE;
-      public readonly executionRole?: iam.IRole = undefined;
-    }
+    return new ImportedTaskDefinition(scope, id, { taskDefinitionArn: taskDefinitionArn });
+  }
 
-    return new Import(scope, id);
+  /**
+   * Create a task definition from a task definition reference
+   */
+  public static fromTaskDefinitionAttributes(scope: Construct, id: string, attrs: TaskDefinitionAttributes): ITaskDefinition {
+    return new ImportedTaskDefinition(scope, id, {
+      taskDefinitionArn: attrs.taskDefinitionArn,
+      compatibility: attrs.compatibility,
+      networkMode: attrs.networkMode,
+      taskRole: attrs.taskRole,
+    });
   }
 
   /**
@@ -210,7 +303,7 @@ export class TaskDefinition extends TaskDefinitionBase {
   public defaultContainer?: ContainerDefinition;
 
   /**
-   * The task launch type compatiblity requirement.
+   * The task launch type compatibility requirement.
    */
   public readonly compatibility: Compatibility;
 
@@ -231,25 +324,28 @@ export class TaskDefinition extends TaskDefinitionBase {
 
   private _executionRole?: iam.IRole;
 
+  private _referencesSecretJsonField?: boolean;
+
   /**
    * Constructs a new instance of the TaskDefinition class.
    */
   constructor(scope: Construct, id: string, props: TaskDefinitionProps) {
     super(scope, id);
 
-    this.family = props.family || this.node.uniqueId;
+    this.family = props.family || Names.uniqueId(this);
     this.compatibility = props.compatibility;
 
     if (props.volumes) {
       props.volumes.forEach(v => this.addVolume(v));
     }
 
-    this.networkMode = props.networkMode !== undefined ? props.networkMode :
-                       this.isFargateCompatible ? NetworkMode.AWS_VPC : NetworkMode.BRIDGE;
+    this.networkMode = props.networkMode ?? (this.isFargateCompatible ? NetworkMode.AWS_VPC : NetworkMode.BRIDGE);
     if (this.isFargateCompatible && this.networkMode !== NetworkMode.AWS_VPC) {
       throw new Error(`Fargate tasks can only have AwsVpc network mode, got: ${this.networkMode}`);
     }
-
+    if (props.proxyConfiguration && this.networkMode !== NetworkMode.AWS_VPC) {
+      throw new Error(`ProxyConfiguration can only be used with AwsVpc network mode, got: ${this.networkMode}`);
+    }
     if (props.placementConstraints && props.placementConstraints.length > 0 && this.isFargateCompatible) {
       throw new Error('Cannot set placement constraints on tasks that run on Fargate');
     }
@@ -261,25 +357,29 @@ export class TaskDefinition extends TaskDefinitionBase {
     this._executionRole = props.executionRole;
 
     this.taskRole = props.taskRole || new iam.Role(this, 'TaskRole', {
-        assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
+      assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
     });
 
     const taskDef = new CfnTaskDefinition(this, 'Resource', {
-      containerDefinitions: Lazy.anyValue({ produce: () => this.containers.map(x => x.renderContainerDefinition()) }),
-      volumes: Lazy.anyValue({ produce: () => this.volumes }),
-      executionRoleArn: Lazy.stringValue({ produce: () => this.executionRole && this.executionRole.roleArn }),
+      containerDefinitions: Lazy.any({ produce: () => this.renderContainers() }, { omitEmptyArray: true }),
+      volumes: Lazy.any({ produce: () => this.renderVolumes() }, { omitEmptyArray: true }),
+      executionRoleArn: Lazy.string({ produce: () => this.executionRole && this.executionRole.roleArn }),
       family: this.family,
       taskRoleArn: this.taskRole.roleArn,
       requiresCompatibilities: [
-        ...(isEc2Compatible(props.compatibility) ? ["EC2"] : []),
-        ...(isFargateCompatible(props.compatibility) ? ["FARGATE"] : []),
+        ...(isEc2Compatible(props.compatibility) ? ['EC2'] : []),
+        ...(isFargateCompatible(props.compatibility) ? ['FARGATE'] : []),
       ],
-      networkMode: this.networkMode,
-      placementConstraints: Lazy.anyValue({ produce: () =>
-        !isFargateCompatible(this.compatibility) && this.placementConstraints.length > 0 ? this.placementConstraints : undefined
-      }),
+      networkMode: this.renderNetworkMode(this.networkMode),
+      placementConstraints: Lazy.any({
+        produce: () =>
+          !isFargateCompatible(this.compatibility) ? this.placementConstraints : undefined,
+      }, { omitEmptyArray: true }),
+      proxyConfiguration: props.proxyConfiguration ? props.proxyConfiguration.bind(this.stack, this) : undefined,
       cpu: props.cpu,
       memory: props.memoryMiB,
+      ipcMode: props.ipcMode,
+      pidMode: props.pidMode,
     });
 
     if (props.placementConstraints) {
@@ -293,18 +393,82 @@ export class TaskDefinition extends TaskDefinitionBase {
     return this._executionRole;
   }
 
+  private renderVolumes(): CfnTaskDefinition.VolumeProperty[] {
+    return this.volumes.map(renderVolume);
+
+    function renderVolume(spec: Volume): CfnTaskDefinition.VolumeProperty {
+      return {
+        host: spec.host,
+        name: spec.name,
+        dockerVolumeConfiguration: spec.dockerVolumeConfiguration && {
+          autoprovision: spec.dockerVolumeConfiguration.autoprovision,
+          driver: spec.dockerVolumeConfiguration.driver,
+          driverOpts: spec.dockerVolumeConfiguration.driverOpts,
+          labels: spec.dockerVolumeConfiguration.labels,
+          scope: spec.dockerVolumeConfiguration.scope,
+        },
+        efsVolumeConfiguration: spec.efsVolumeConfiguration && {
+          fileSystemId: spec.efsVolumeConfiguration.fileSystemId,
+          authorizationConfig: spec.efsVolumeConfiguration.authorizationConfig,
+          rootDirectory: spec.efsVolumeConfiguration.rootDirectory,
+          transitEncryption: spec.efsVolumeConfiguration.transitEncryption,
+          transitEncryptionPort: spec.efsVolumeConfiguration.transitEncryptionPort,
+
+        },
+      };
+    }
+  }
+
+  /**
+   * Validate the existence of the input target and set default values.
+   *
+   * @internal
+   */
+  public _validateTarget(options: LoadBalancerTargetOptions): LoadBalancerTarget {
+    const targetContainer = this.findContainer(options.containerName);
+    if (targetContainer === undefined) {
+      throw new Error(`No container named '${options.containerName}'. Did you call "addContainer()"?`);
+    }
+    const targetProtocol = options.protocol || Protocol.TCP;
+    const targetContainerPort = options.containerPort || targetContainer.containerPort;
+    const portMapping = targetContainer.findPortMapping(targetContainerPort, targetProtocol);
+    if (portMapping === undefined) {
+      // eslint-disable-next-line max-len
+      throw new Error(`Container '${targetContainer}' has no mapping for port ${options.containerPort} and protocol ${targetProtocol}. Did you call "container.addPortMappings()"?`);
+    }
+    return {
+      containerName: options.containerName,
+      portMapping,
+    };
+  }
+
+  /**
+   * Returns the port range to be opened that match the provided container name and container port.
+   *
+   * @internal
+   */
+  public _portRangeFromPortMapping(portMapping: PortMapping): ec2.Port {
+    if (portMapping.hostPort !== undefined && portMapping.hostPort !== 0) {
+      return portMapping.protocol === Protocol.UDP ? ec2.Port.udp(portMapping.hostPort) : ec2.Port.tcp(portMapping.hostPort);
+    }
+    if (this.networkMode === NetworkMode.BRIDGE || this.networkMode === NetworkMode.NAT) {
+      return EPHEMERAL_PORT_RANGE;
+    }
+    return portMapping.protocol === Protocol.UDP ? ec2.Port.udp(portMapping.containerPort) : ec2.Port.tcp(portMapping.containerPort);
+  }
+
   /**
    * Adds a policy statement to the task IAM role.
    */
   public addToTaskRolePolicy(statement: iam.PolicyStatement) {
-    this.taskRole.addToPolicy(statement);
+    this.taskRole.addToPrincipalPolicy(statement);
   }
 
   /**
    * Adds a policy statement to the task execution IAM role.
    */
   public addToExecutionRolePolicy(statement: iam.PolicyStatement) {
-    this.obtainExecutionRole().addToPolicy(statement);
+    this.obtainExecutionRole().addToPrincipalPolicy(statement);
   }
 
   /**
@@ -315,6 +479,18 @@ export class TaskDefinition extends TaskDefinitionBase {
   }
 
   /**
+   * Adds a firelens log router to the task definition.
+   */
+  public addFirelensLogRouter(id: string, props: FirelensLogRouterDefinitionOptions) {
+    // only one firelens log router is allowed in each task.
+    if (this.containers.find(x => x instanceof FirelensLogRouter)) {
+      throw new Error('Firelens log router is already added in this task.');
+    }
+
+    return new FirelensLogRouter(this, id, { taskDefinition: this, ...props });
+  }
+
+  /**
    * Links a container to this task definition.
    * @internal
    */
@@ -322,6 +498,9 @@ export class TaskDefinition extends TaskDefinitionBase {
     this.containers.push(container);
     if (this.defaultContainer === undefined && container.essential) {
       this.defaultContainer = container;
+    }
+    if (container.referencesSecretJsonField) {
+      this._referencesSecretJsonField = true;
     }
   }
 
@@ -365,6 +544,14 @@ export class TaskDefinition extends TaskDefinitionBase {
   }
 
   /**
+   * Whether this task definition has at least a container that references a
+   * specific JSON field of a secret stored in Secrets Manager.
+   */
+  public get referencesSecretJsonField(): boolean | undefined {
+    return this._referencesSecretJsonField;
+  }
+
+  /**
    * Validates the task definition.
    */
   protected validate(): string[] {
@@ -376,13 +563,51 @@ export class TaskDefinition extends TaskDefinitionBase {
       // Container sizes
       for (const container of this.containers) {
         if (!container.memoryLimitSpecified) {
-          ret.push(`ECS Container ${container.node.id} must have at least one of 'memoryLimitMiB' or 'memoryReservationMiB' specified`);
+          ret.push(`ECS Container ${container.containerName} must have at least one of 'memoryLimitMiB' or 'memoryReservationMiB' specified`);
         }
       }
     }
     return ret;
   }
+
+  /**
+   * Returns the container that match the provided containerName.
+   */
+  private findContainer(containerName: string): ContainerDefinition | undefined {
+    return this.containers.find(c => c.containerName === containerName);
+  }
+
+  private renderNetworkMode(networkMode: NetworkMode): string | undefined {
+    return (networkMode === NetworkMode.NAT) ? undefined : networkMode;
+  }
+
+  private renderContainers() {
+    // add firelens log router container if any application container is using firelens log driver,
+    // also check if already created log router container
+    for (const container of this.containers) {
+      if (container.logDriverConfig && container.logDriverConfig.logDriver === 'awsfirelens'
+        && !this.containers.find(x => x instanceof FirelensLogRouter)) {
+        this.addFirelensLogRouter('log-router', {
+          image: obtainDefaultFluentBitECRImage(this, container.logDriverConfig),
+          firelensConfig: {
+            type: FirelensLogRouterType.FLUENTBIT,
+          },
+          logging: new AwsLogDriver({ streamPrefix: 'firelens' }),
+          memoryReservationMiB: 50,
+        });
+
+        break;
+      }
+    }
+
+    return this.containers.map(x => x.renderContainerDefinition());
+  }
 }
+
+/**
+ * The port range to open up for dynamic port mapping
+ */
+const EPHEMERAL_PORT_RANGE = ec2.Port.tcpRange(32768, 65535);
 
 /**
  * The networking mode to use for the containers in the task.
@@ -410,6 +635,52 @@ export enum NetworkMode {
    * single container instance when port mappings are used.
    */
   HOST = 'host',
+
+  /**
+   * The task utilizes NAT network mode required by Windows containers.
+   *
+   * This is the only supported network mode for Windows containers. For more information, see
+   * [Task Definition Parameters](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_definition_parameters.html#network_mode).
+   */
+  NAT = 'nat'
+}
+
+/**
+ * The IPC resource namespace to use for the containers in the task.
+ */
+export enum IpcMode {
+  /**
+   * If none is specified, then IPC resources within the containers of a task are private and not
+   * shared with other containers in a task or on the container instance
+   */
+  NONE = 'none',
+
+  /**
+   * If host is specified, then all containers within the tasks that specified the host IPC mode on
+   * the same container instance share the same IPC resources with the host Amazon EC2 instance.
+   */
+  HOST = 'host',
+
+  /**
+   * If task is specified, all containers within the specified task share the same IPC resources.
+   */
+  TASK = 'task',
+}
+
+/**
+ * The process namespace to use for the containers in the task.
+ */
+export enum PidMode {
+  /**
+   * If host is specified, then all containers within the tasks that specified the host PID mode
+   * on the same container instance share the same process namespace with the host Amazon EC2 instance.
+   */
+  HOST = 'host',
+
+  /**
+   * If task is specified, all containers within the specified task share the same process namespace.
+   */
+  TASK = 'task',
 }
 
 /**
@@ -448,6 +719,19 @@ export interface Volume {
    * To use bind mounts, specify a host instead.
    */
   readonly dockerVolumeConfiguration?: DockerVolumeConfiguration;
+
+  /**
+   * This property is specified when you are using Amazon EFS.
+   *
+   * When specifying Amazon EFS volumes in tasks using the Fargate launch type,
+   * Fargate creates a supervisor container that is responsible for managing the Amazon EFS volume.
+   * The supervisor container uses a small amount of the task's memory.
+   * The supervisor container is visible when querying the task metadata version 4 endpoint,
+   * but is not visible in CloudWatch Container Insights.
+   *
+   * @default No Elastic FileSystem is setup
+   */
+  readonly efsVolumeConfiguration?: EfsVolumeConfiguration;
 }
 
 /**
@@ -462,6 +746,47 @@ export interface Host {
    * This property is not supported for tasks that use the Fargate launch type.
    */
   readonly sourcePath?: string;
+}
+
+/**
+ * Properties for an ECS target.
+ *
+ * @internal
+ */
+export interface LoadBalancerTarget {
+  /**
+   * The name of the container.
+   */
+  readonly containerName: string;
+
+  /**
+   * The port mapping of the target.
+   */
+  readonly portMapping: PortMapping
+}
+
+/**
+ * Properties for defining an ECS target. The port mapping for it must already have been created through addPortMapping().
+ */
+export interface LoadBalancerTargetOptions {
+  /**
+   * The name of the container.
+   */
+  readonly containerName: string;
+
+  /**
+   * The port number of the container. Only applicable when using application/network load balancers.
+   *
+   * @default - Container port of the first added port mapping.
+   */
+  readonly containerPort?: number;
+
+  /**
+   * The protocol used for the port mapping. Only applicable when using application load balancers.
+   *
+   * @default Protocol.TCP
+   */
+  readonly protocol?: Protocol;
 }
 
 /**
@@ -484,17 +809,82 @@ export interface DockerVolumeConfiguration {
    *
    * @default No options
    */
-  readonly driverOpts?: string[];
+  readonly driverOpts?: {[key: string]: string};
   /**
    * Custom metadata to add to your Docker volume.
    *
    * @default No labels
    */
-  readonly labels?: string[];
+  readonly labels?: { [key: string]: string; }
   /**
    * The scope for the Docker volume that determines its lifecycle.
    */
   readonly scope: Scope;
+}
+
+/**
+ * The authorization configuration details for the Amazon EFS file system.
+ */
+export interface AuthorizationConfig {
+  /**
+   * The access point ID to use.
+   * If an access point is specified, the root directory value will be
+   * relative to the directory set for the access point.
+   * If specified, transit encryption must be enabled in the EFSVolumeConfiguration.
+   *
+   * @default No id
+   */
+  readonly accessPointId?: string;
+  /**
+   * Whether or not to use the Amazon ECS task IAM role defined
+   * in a task definition when mounting the Amazon EFS file system.
+   * If enabled, transit encryption must be enabled in the EFSVolumeConfiguration.
+   *
+   * Valid values: ENABLED | DISABLED
+   *
+   * @default If this parameter is omitted, the default value of DISABLED is used.
+   */
+  readonly iam?: string;
+}
+
+/**
+ * The configuration for an Elastic FileSystem volume.
+ */
+export interface EfsVolumeConfiguration {
+  /**
+   * The Amazon EFS file system ID to use.
+   */
+  readonly fileSystemId: string;
+  /**
+   * The directory within the Amazon EFS file system to mount as the root directory inside the host.
+   * Specifying / will have the same effect as omitting this parameter.
+   *
+   * @default The root of the Amazon EFS volume
+   */
+  readonly rootDirectory?: string;
+  /**
+   * Whether or not to enable encryption for Amazon EFS data in transit between
+   * the Amazon ECS host and the Amazon EFS server.
+   * Transit encryption must be enabled if Amazon EFS IAM authorization is used.
+   *
+   * Valid values: ENABLED | DISABLED
+   *
+   * @default DISABLED
+   */
+  readonly transitEncryption?: string;
+  /**
+   * The port to use when sending encrypted data between
+   * the Amazon ECS host and the Amazon EFS server. EFS mount helper uses.
+   *
+   * @default Port selection strategy that the Amazon EFS mount helper uses.
+   */
+  readonly transitEncryptionPort?: number;
+  /**
+   * The authorization configuration details for the Amazon EFS file system.
+   *
+   * @default No configuration.
+   */
+  readonly authorizationConfig?: AuthorizationConfig;
 }
 
 /**
@@ -506,12 +896,12 @@ export enum Scope {
   /**
    * Docker volumes that are scoped to a task are automatically provisioned when the task starts and destroyed when the task stops.
    */
-  TASK = "task",
+  TASK = 'task',
 
   /**
    * Docker volumes that are scoped as shared persist after the task stops.
    */
-  SHARED = "shared"
+  SHARED = 'shared'
 }
 
 /**
@@ -555,13 +945,13 @@ export interface ITaskDefinitionExtension {
 /**
  * Return true if the given task definition can be run on an EC2 cluster
  */
-function isEc2Compatible(compatibility: Compatibility): boolean {
+export function isEc2Compatible(compatibility: Compatibility): boolean {
   return [Compatibility.EC2, Compatibility.EC2_AND_FARGATE].includes(compatibility);
 }
 
 /**
  * Return true if the given task definition can be run on a Fargate cluster
  */
-function isFargateCompatible(compatibility: Compatibility): boolean {
+export function isFargateCompatible(compatibility: Compatibility): boolean {
   return [Compatibility.FARGATE, Compatibility.EC2_AND_FARGATE].includes(compatibility);
 }

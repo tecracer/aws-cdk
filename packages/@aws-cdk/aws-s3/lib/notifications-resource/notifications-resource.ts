@@ -1,7 +1,11 @@
-import cdk = require('@aws-cdk/core');
+import * as cdk from '@aws-cdk/core';
 import { Bucket, EventType, NotificationKeyFilter } from '../bucket';
 import { BucketNotificationDestinationType, IBucketNotificationDestination } from '../destination';
 import { NotificationsResourceHandler } from './notifications-resource-handler';
+
+// keep this import separate from other imports to reduce chance for merge conflicts with v2-main
+// eslint-disable-next-line no-duplicate-imports, import/order
+import { Construct } from '@aws-cdk/core';
 
 interface NotificationsProps {
   /**
@@ -28,14 +32,14 @@ interface NotificationsProps {
  * @see
  * https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-s3-bucket-notificationconfig.html
  */
-export class BucketNotifications extends cdk.Construct {
+export class BucketNotifications extends Construct {
   private readonly lambdaNotifications = new Array<LambdaFunctionConfiguration>();
   private readonly queueNotifications = new Array<QueueConfiguration>();
   private readonly topicNotifications = new Array<TopicConfiguration>();
   private resource?: cdk.CfnResource;
   private readonly bucket: Bucket;
 
-  constructor(scope: cdk.Construct, id: string, props: NotificationsProps) {
+  constructor(scope: Construct, id: string, props: NotificationsProps) {
     super(scope, id);
     this.bucket = props.bucket;
   }
@@ -55,7 +59,7 @@ export class BucketNotifications extends cdk.Construct {
     // policies to allow this notification to happen.
     const targetProps = target.bind(this, this.bucket);
     const commonConfig: CommonConfiguration = {
-      Events: [ event ],
+      Events: [event],
       Filter: renderFilters(filters),
     };
 
@@ -89,7 +93,7 @@ export class BucketNotifications extends cdk.Construct {
     return {
       LambdaFunctionConfigurations: this.lambdaNotifications.length > 0 ? this.lambdaNotifications : undefined,
       QueueConfigurations: this.queueNotifications.length > 0 ? this.queueNotifications : undefined,
-      TopicConfigurations: this.topicNotifications.length > 0 ? this.topicNotifications : undefined
+      TopicConfigurations: this.topicNotifications.length > 0 ? this.topicNotifications : undefined,
     };
   }
 
@@ -107,8 +111,8 @@ export class BucketNotifications extends cdk.Construct {
         properties: {
           ServiceToken: handlerArn,
           BucketName: this.bucket.bucketName,
-          NotificationConfiguration: cdk.Lazy.anyValue({ produce: () => this.renderNotificationConfiguration() })
-        }
+          NotificationConfiguration: cdk.Lazy.any({ produce: () => this.renderNotificationConfiguration() }),
+        },
       });
     }
 
@@ -122,6 +126,8 @@ function renderFilters(filters?: NotificationKeyFilter[]): Filter | undefined {
   }
 
   const renderedRules = new Array<FilterRule>();
+  let hasPrefix = false;
+  let hasSuffix = false;
 
   for (const rule of filters) {
     if (!rule.suffix && !rule.prefix) {
@@ -129,18 +135,26 @@ function renderFilters(filters?: NotificationKeyFilter[]): Filter | undefined {
     }
 
     if (rule.suffix) {
+      if (hasSuffix) {
+        throw new Error('Cannot specify more than one suffix rule in a filter.');
+      }
       renderedRules.push({ Name: 'suffix', Value: rule.suffix });
+      hasSuffix = true;
     }
 
     if (rule.prefix) {
+      if (hasPrefix) {
+        throw new Error('Cannot specify more than one prefix rule in a filter.');
+      }
       renderedRules.push({ Name: 'prefix', Value: rule.prefix });
+      hasPrefix = true;
     }
   }
 
   return {
     Key: {
-      FilterRules: renderedRules
-    }
+      FilterRules: renderedRules,
+    },
   };
 }
 

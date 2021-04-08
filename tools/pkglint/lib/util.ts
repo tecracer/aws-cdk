@@ -1,6 +1,6 @@
-import fs = require('fs');
-import path = require('path');
-import { PackageJson } from "./packagejson";
+import * as fs from 'fs';
+import * as path from 'path';
+import { PackageJson, PKGLINT_IGNORES } from './packagejson';
 
 /**
  * Expect a particular JSON key to be a given value
@@ -12,7 +12,7 @@ export function expectJSON(ruleName: string, pkg: PackageJson, jsonPath: string,
     pkg.report({
       ruleName,
       message: `${jsonPath} should be ${JSON.stringify(expected)}${ignore ? ` (ignoring ${ignore})` : ''}, is ${JSON.stringify(actual)}`,
-      fix: () => { deepSet(pkg.json, parts, expected); }
+      fix: () => { deepSet(pkg.json, parts, expected); },
     });
   }
 
@@ -39,7 +39,20 @@ export function fileShouldContain(ruleName: string, pkg: PackageJson, fileName: 
       pkg.report({
         ruleName,
         message: `${fileName} should contain '${line}'`,
-        fix: () => pkg.addToFileSync(fileName, line)
+        fix: () => pkg.addToFileSync(fileName, line),
+      });
+    }
+  }
+}
+
+export function fileShouldNotContain(ruleName: string, pkg: PackageJson, fileName: string, ...lines: string[]) {
+  for (const line of lines) {
+    const doesContain = pkg.fileContainsSync(fileName, line);
+    if (doesContain) {
+      pkg.report({
+        ruleName,
+        message: `${fileName} should NOT contain '${line}'`,
+        fix: () => pkg.removeFromFileSync(fileName, line),
       });
     }
   }
@@ -54,7 +67,20 @@ export function fileShouldBe(ruleName: string, pkg: PackageJson, fileName: strin
     pkg.report({
       ruleName,
       message: `${fileName} should contain exactly '${content}'`,
-      fix: () => pkg.writeFileSync(fileName, content)
+      fix: () => pkg.writeFileSync(fileName, content),
+    });
+  }
+}
+
+/**
+ * Export a package-level file to contain specific content
+ */
+export function fileShouldBeginWith(ruleName: string, pkg: PackageJson, fileName: string, ...lines: string[]) {
+  const isContent = pkg.fileBeginsWith(fileName, ...lines);
+  if (!isContent) {
+    pkg.report({
+      ruleName,
+      message: `${fileName} does NOT begin with ${lines}'`,
     });
   }
 }
@@ -68,7 +94,7 @@ export function expectDevDependency(ruleName: string, pkg: PackageJson, packageN
     pkg.report({
       ruleName,
       message: `Missing devDependency: ${packageName} @ ${version}`,
-      fix: () => pkg.addDevDependency(packageName, version)
+      fix: () => pkg.addDevDependency(packageName, version),
     });
   }
 }
@@ -124,15 +150,6 @@ export function deepSet(x: any, jsonPath: string[], value: any) {
   x[jsonPath[0]] = value;
 }
 
-/**
- * Find 'lerna.json' and read the global package version from there
- */
-export function monoRepoVersion() {
-  const found = findLernaJSON();
-  const lernaJson = require(found);
-  return lernaJson.version;
-}
-
 export function findUpward(dir: string, pred: (x: string) => boolean): string | undefined {
   while (true) {
     if (pred(dir)) { return dir; }
@@ -154,15 +171,17 @@ export function monoRepoRoot() {
   return ret;
 }
 
-function findLernaJSON() {
-  return path.join(monoRepoRoot(), 'lerna.json');
-}
-
 export function* findInnerPackages(dir: string): IterableIterator<string> {
   for (const fname of fs.readdirSync(dir, { encoding: 'utf8' })) {
-    const stat = fs.statSync(path.join(dir, fname));
-    if (!stat.isDirectory()) { continue; }
-    if (fname === 'node_modules') { continue; }
+    try {
+      const stat = fs.statSync(path.join(dir, fname));
+      if (!stat.isDirectory()) { continue; }
+    } catch (e) {
+      // Survive invalid symlinks
+      if (e.code !== 'ENOENT') { throw e; }
+      continue;
+    }
+    if (PKGLINT_IGNORES.includes(fname)) { continue; }
 
     if (fs.existsSync(path.join(dir, fname, 'package.json'))) {
       yield path.join(dir, fname);

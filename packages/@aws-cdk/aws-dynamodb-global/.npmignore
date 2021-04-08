@@ -17,3 +17,11 @@ dist
 lambda-packages/aws-global-table-coordinator/node_modules
 
 *.tsbuildinfo
+
+tsconfig.json
+.eslintrc.js
+
+# exclude cdk artifacts
+**/cdk.out
+junit.xml
+test/

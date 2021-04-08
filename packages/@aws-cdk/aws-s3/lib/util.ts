@@ -1,8 +1,8 @@
-import cdk = require('@aws-cdk/core');
-import { Stack } from '@aws-cdk/core';
+import * as cdk from '@aws-cdk/core';
+import { IConstruct } from 'constructs';
 import { BucketAttributes } from './bucket';
 
-export function parseBucketArn(construct: cdk.IConstruct, props: BucketAttributes): string {
+export function parseBucketArn(construct: IConstruct, props: BucketAttributes): string {
 
   // if we have an explicit bucket ARN, use it.
   if (props.bucketArn) {
@@ -10,20 +10,20 @@ export function parseBucketArn(construct: cdk.IConstruct, props: BucketAttribute
   }
 
   if (props.bucketName) {
-    return Stack.of(construct).formatArn({
+    return cdk.Stack.of(construct).formatArn({
       // S3 Bucket names are globally unique in a partition,
       // and so their ARNs have empty region and account components
       region: '',
       account: '',
       service: 's3',
-      resource: props.bucketName
+      resource: props.bucketName,
     });
   }
 
   throw new Error('Cannot determine bucket ARN. At least `bucketArn` or `bucketName` is needed');
 }
 
-export function parseBucketName(construct: cdk.IConstruct, props: BucketAttributes): string | undefined {
+export function parseBucketName(construct: IConstruct, props: BucketAttributes): string | undefined {
 
   // if we have an explicit bucket name, use it.
   if (props.bucketName) {
@@ -32,7 +32,7 @@ export function parseBucketName(construct: cdk.IConstruct, props: BucketAttribut
 
   // extract bucket name from bucket arn
   if (props.bucketArn) {
-    return Stack.of(construct).parseArn(props.bucketArn).resource;
+    return cdk.Stack.of(construct).parseArn(props.bucketArn).resource;
   }
 
   // no bucket name is okay since it's optional.

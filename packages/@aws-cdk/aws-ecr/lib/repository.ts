@@ -1,6 +1,7 @@
-import events = require('@aws-cdk/aws-events');
-import iam = require('@aws-cdk/aws-iam');
-import { Construct, IConstruct, IResource, Lazy, RemovalPolicy, Resource, Stack, Token } from '@aws-cdk/core';
+import * as events from '@aws-cdk/aws-events';
+import * as iam from '@aws-cdk/aws-iam';
+import { IResource, Lazy, RemovalPolicy, Resource, Stack, Token } from '@aws-cdk/core';
+import { IConstruct, Construct } from 'constructs';
 import { CfnRepository } from './ecr.generated';
 import { LifecycleRule, TagStatus } from './lifecycle';
 
@@ -39,9 +40,18 @@ export interface IRepository extends IResource {
   repositoryUriForTag(tag?: string): string;
 
   /**
+   * Returns the URI of the repository for a certain tag. Can be used in `docker push/pull`.
+   *
+   *    ACCOUNT.dkr.ecr.REGION.amazonaws.com/REPOSITORY[@DIGEST]
+   *
+   * @param digest Image digest to use (tools usually default to the image with the "latest" tag if omitted)
+   */
+  repositoryUriForDigest(digest?: string): string;
+
+  /**
    * Add a policy statement to the repository's resource policy
    */
-  addToResourcePolicy(statement: iam.PolicyStatement): void;
+  addToResourcePolicy(statement: iam.PolicyStatement): iam.AddToResourcePolicyResult;
 
   /**
    * Grant the given principal identity permissions to perform the actions on this repository
@@ -80,6 +90,21 @@ export interface IRepository extends IResource {
    * @param options Options for adding the rule
    */
   onCloudTrailImagePushed(id: string, options?: OnCloudTrailImagePushedOptions): events.Rule;
+
+  /**
+   * Defines an AWS CloudWatch event rule that can trigger a target when the image scan is completed
+   *
+   *
+   * @param id The id of the rule
+   * @param options Options for adding the rule
+   */
+  onImageScanCompleted(id: string, options?: OnImageScanCompletedOptions): events.Rule;
+
+  /**
+   * Defines a CloudWatch event rule which triggers for repository events. Use
+   * `rule.addEventPattern(pattern)` to specify a filter.
+   */
+  onEvent(id: string, options?: events.OnEventOptions): events.Rule;
 }
 
 /**
@@ -99,7 +124,7 @@ export abstract class RepositoryBase extends Resource implements IRepository {
   /**
    * Add a policy statement to the repository's resource policy
    */
-  public abstract addToResourcePolicy(statement: iam.PolicyStatement): void;
+  public abstract addToResourcePolicy(statement: iam.PolicyStatement): iam.AddToResourcePolicyResult;
 
   /**
    * The URI of this repository (represents the latest image):
@@ -120,8 +145,29 @@ export abstract class RepositoryBase extends Resource implements IRepository {
    */
   public repositoryUriForTag(tag?: string): string {
     const tagSuffix = tag ? `:${tag}` : '';
-    const parts = Stack.of(this).parseArn(this.repositoryArn);
-    return `${parts.account}.dkr.ecr.${parts.region}.amazonaws.com/${this.repositoryName}${tagSuffix}`;
+    return this.repositoryUriWithSuffix(tagSuffix);
+  }
+
+  /**
+   * Returns the URL of the repository. Can be used in `docker push/pull`.
+   *
+   *    ACCOUNT.dkr.ecr.REGION.amazonaws.com/REPOSITORY[@DIGEST]
+   *
+   * @param digest Optional image digest
+   */
+  public repositoryUriForDigest(digest?: string): string {
+    const digestSuffix = digest ? `@${digest}` : '';
+    return this.repositoryUriWithSuffix(digestSuffix);
+  }
+
+  /**
+   * Returns the repository URI, with an appended suffix, if provided.
+   * @param suffix An image tag or an image digest.
+   * @private
+   */
+  private repositoryUriWithSuffix(suffix?: string): string {
+    const parts = this.stack.parseArn(this.repositoryArn);
+    return `${parts.account}.dkr.ecr.${parts.region}.${this.stack.urlSuffix}/${this.repositoryName}${suffix}`;
   }
 
   /**
@@ -142,8 +188,8 @@ export abstract class RepositoryBase extends Resource implements IRepository {
       detail: {
         requestParameters: {
           repositoryName: [this.repositoryName],
-        }
-      }
+        },
+      },
     });
     return rule;
   }
@@ -170,7 +216,41 @@ export abstract class RepositoryBase extends Resource implements IRepository {
     });
     return rule;
   }
+  /**
+   * Defines an AWS CloudWatch event rule that can trigger a target when an image scan is completed
+   *
+   *
+   * @param id The id of the rule
+   * @param options Options for adding the rule
+   */
+  public onImageScanCompleted(id: string, options: OnImageScanCompletedOptions = {}): events.Rule {
+    const rule = new events.Rule(this, id, options);
+    rule.addTarget(options.target);
+    rule.addEventPattern({
+      source: ['aws.ecr'],
+      detailType: ['ECR Image Scan'],
+      detail: {
+        'repository-name': [this.repositoryName],
+        'scan-status': ['COMPLETE'],
+        'image-tags': options.imageTags ?? undefined,
+      },
+    });
+    return rule;
+  }
 
+  /**
+   * Defines a CloudWatch event rule which triggers for repository events. Use
+   * `rule.addEventPattern(pattern)` to specify a filter.
+   */
+  public onEvent(id: string, options: events.OnEventOptions = {}) {
+    const rule = new events.Rule(this, id, options);
+    rule.addEventPattern({
+      source: ['aws.ecr'],
+      resources: [this.repositoryArn],
+    });
+    rule.addTarget(options.target);
+    return rule;
+  }
   /**
    * Grant the given principal identity permissions to perform the actions on this repository
    */
@@ -179,7 +259,7 @@ export abstract class RepositoryBase extends Resource implements IRepository {
       grantee,
       actions,
       resourceArns: [this.repositoryArn],
-      resourceSelfArns: ['*'],
+      resourceSelfArns: [],
       resource: this,
     });
   }
@@ -188,11 +268,11 @@ export abstract class RepositoryBase extends Resource implements IRepository {
    * Grant the given identity permissions to use the images in this repository
    */
   public grantPull(grantee: iam.IGrantable) {
-    const ret = this.grant(grantee, "ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage");
+    const ret = this.grant(grantee, 'ecr:BatchCheckLayerAvailability', 'ecr:GetDownloadUrlForLayer', 'ecr:BatchGetImage');
 
     iam.Grant.addToPrincipal({
       grantee,
-      actions: ["ecr:GetAuthorizationToken"],
+      actions: ['ecr:GetAuthorizationToken'],
       resourceArns: ['*'],
       scope: this,
     });
@@ -206,10 +286,10 @@ export abstract class RepositoryBase extends Resource implements IRepository {
   public grantPullPush(grantee: iam.IGrantable) {
     this.grantPull(grantee);
     return this.grant(grantee,
-      "ecr:PutImage",
-      "ecr:InitiateLayerUpload",
-      "ecr:UploadLayerPart",
-      "ecr:CompleteLayerUpload");
+      'ecr:PutImage',
+      'ecr:InitiateLayerUpload',
+      'ecr:UploadLayerPart',
+      'ecr:CompleteLayerUpload');
   }
 }
 
@@ -223,6 +303,19 @@ export interface OnCloudTrailImagePushedOptions extends events.OnEventOptions {
    * @default - Watch changes to all tags
    */
   readonly imageTag?: string;
+}
+
+/**
+ * Options for the OnImageScanCompleted method
+ */
+export interface OnImageScanCompletedOptions extends events.OnEventOptions {
+  /**
+   * Only watch changes to the image tags spedified.
+   * Leave it undefined to watch the full repository.
+   *
+   * @default - Watch the changes to the repository with all image tags
+   */
+  readonly imageTags?: string[];
 }
 
 export interface RepositoryProps {
@@ -254,6 +347,20 @@ export interface RepositoryProps {
    * @default RemovalPolicy.Retain
    */
   readonly removalPolicy?: RemovalPolicy;
+
+  /**
+   * Enable the scan on push when creating the repository
+   *
+   *  @default false
+   */
+  readonly imageScanOnPush?: boolean;
+
+  /**
+   * The tag mutability setting for the repository. If this parameter is omitted, the default setting of MUTABLE will be used which will allow image tags to be overwritten.
+   *
+   *  @default TagMutability.MUTABLE
+   */
+  readonly imageTagMutability?: TagMutability;
 }
 
 export interface RepositoryAttributes {
@@ -273,8 +380,9 @@ export class Repository extends RepositoryBase {
       public readonly repositoryName = attrs.repositoryName;
       public readonly repositoryArn = attrs.repositoryArn;
 
-      public addToResourcePolicy(_statement: iam.PolicyStatement) {
+      public addToResourcePolicy(_statement: iam.PolicyStatement): iam.AddToResourcePolicyResult {
         // dropped
+        return { statementAdded: false };
       }
     }
 
@@ -296,8 +404,9 @@ export class Repository extends RepositoryBase {
       public repositoryName = repositoryName;
       public repositoryArn = repositoryArn;
 
-      public addToResourcePolicy(_statement: iam.PolicyStatement): void {
+      public addToResourcePolicy(_statement: iam.PolicyStatement): iam.AddToResourcePolicyResult {
         // dropped
+        return { statementAdded: false };
       }
     }
 
@@ -309,8 +418,9 @@ export class Repository extends RepositoryBase {
       public repositoryName = repositoryName;
       public repositoryArn = Repository.arnForLocalRepository(repositoryName, scope);
 
-      public addToResourcePolicy(_statement: iam.PolicyStatement): void {
+      public addToResourcePolicy(_statement: iam.PolicyStatement): iam.AddToResourcePolicyResult {
         // dropped
+        return { statementAdded: false };
       }
     }
 
@@ -321,11 +431,12 @@ export class Repository extends RepositoryBase {
    * Returns an ECR ARN for a repository that resides in the same account/region
    * as the current stack.
    */
-  public static arnForLocalRepository(repositoryName: string, scope: IConstruct): string {
+  public static arnForLocalRepository(repositoryName: string, scope: IConstruct, account?: string): string {
     return Stack.of(scope).formatArn({
+      account,
       service: 'ecr',
       resource: 'repository',
-      resourceName: repositoryName
+      resourceName: repositoryName,
     });
   }
 
@@ -343,8 +454,12 @@ export class Repository extends RepositoryBase {
     const resource = new CfnRepository(this, 'Resource', {
       repositoryName: this.physicalName,
       // It says "Text", but they actually mean "Object".
-      repositoryPolicyText: Lazy.anyValue({ produce: () => this.policyDocument }),
-      lifecyclePolicy: Lazy.anyValue({ produce: () => this.renderLifecyclePolicy() }),
+      repositoryPolicyText: Lazy.any({ produce: () => this.policyDocument }),
+      lifecyclePolicy: Lazy.any({ produce: () => this.renderLifecyclePolicy() }),
+      imageScanningConfiguration: !props.imageScanOnPush ? undefined : {
+        ScanOnPush: true,
+      },
+      imageTagMutability: props.imageTagMutability || undefined,
     });
 
     resource.applyRemovalPolicy(props.removalPolicy);
@@ -362,11 +477,18 @@ export class Repository extends RepositoryBase {
     });
   }
 
-  public addToResourcePolicy(statement: iam.PolicyStatement) {
+  public addToResourcePolicy(statement: iam.PolicyStatement): iam.AddToResourcePolicyResult {
     if (this.policyDocument === undefined) {
       this.policyDocument = new iam.PolicyDocument();
     }
     this.policyDocument.addStatements(statement);
+    return { statementAdded: false, policyDependable: this.policyDocument };
+  }
+
+  protected validate(): string[] {
+    const errors = super.validate();
+    errors.push(...this.policyDocument?.validateForResourcePolicy() || []);
+    return errors;
   }
 
   /**
@@ -442,7 +564,7 @@ export class Repository extends RepositoryBase {
     for (const rule of prioritizedRules.concat(autoPrioritizedRules).concat(anyRules)) {
       ret.push({
         ...rule,
-        rulePriority: rule.rulePriority !== undefined ? rule.rulePriority : autoPrio++
+        rulePriority: rule.rulePriority ?? autoPrio++,
       });
     }
 
@@ -473,12 +595,12 @@ function renderLifecycleRule(rule: LifecycleRule) {
       tagStatus: rule.tagStatus || TagStatus.ANY,
       tagPrefixList: rule.tagPrefixList,
       countType: rule.maxImageAge !== undefined ? CountType.SINCE_IMAGE_PUSHED : CountType.IMAGE_COUNT_MORE_THAN,
-      countNumber: rule.maxImageAge !== undefined ? rule.maxImageAge.toDays() : rule.maxImageCount,
+      countNumber: rule.maxImageAge?.toDays() ?? rule.maxImageCount,
       countUnit: rule.maxImageAge !== undefined ? 'days' : undefined,
     },
     action: {
-      type: 'expire'
-    }
+      type: 'expire',
+    },
   };
 }
 
@@ -495,4 +617,20 @@ const enum CountType {
    * Set an age limit on the images in your repository
    */
   SINCE_IMAGE_PUSHED = 'sinceImagePushed',
+}
+
+/**
+ * The tag mutability setting for your repository.
+ */
+export enum TagMutability {
+  /**
+   * allow image tags to be overwritten.
+   */
+  MUTABLE = 'MUTABLE',
+
+  /**
+   * all image tags within the repository will be immutable which will prevent them from being overwritten.
+   */
+  IMMUTABLE = 'IMMUTABLE',
+
 }

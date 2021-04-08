@@ -13,9 +13,18 @@ dist
 # Include .jsii
 !.jsii
 
-lambda/src
 lambda/test
 lambda/*.sh
 *.snk
 
 *.tsbuildinfo
+
+tsconfig.json
+.eslintrc.js
+
+jest.config.js
+# exclude cdk artifacts
+**/cdk.out
+
+junit.xml
+test/

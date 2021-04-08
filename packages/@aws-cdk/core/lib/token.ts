@@ -1,10 +1,38 @@
-import { IConstruct } from "./construct";
-import { unresolved } from "./private/encoding";
-import { Intrinsic } from "./private/intrinsic";
-import { resolve } from "./private/resolve";
-import { TokenMap } from "./private/token-map";
-import { IResolvable, ITokenResolver } from "./resolvable";
-import { TokenizedStringFragments } from "./string-fragments";
+import { IConstruct } from 'constructs';
+import { Lazy } from './lazy';
+import { unresolved } from './private/encoding';
+import { Intrinsic } from './private/intrinsic';
+import { resolve } from './private/resolve';
+import { TokenMap } from './private/token-map';
+import { IResolvable, ITokenResolver } from './resolvable';
+import { TokenizedStringFragments } from './string-fragments';
+
+/**
+ * An enum-like class that represents the result of comparing two Tokens.
+ * The return type of {@link Token.compareStrings}.
+ */
+export class TokenComparison {
+  /**
+   * This means we're certain the two components are NOT
+   * Tokens, and identical.
+   */
+  public static readonly SAME = new TokenComparison();
+
+  /**
+   * This means we're certain the two components are NOT
+   * Tokens, and different.
+   */
+  public static readonly DIFFERENT = new TokenComparison();
+
+  /** This means exactly one of the components is a Token. */
+  public static readonly ONE_UNRESOLVED = new TokenComparison();
+
+  /** This means both components are Tokens. */
+  public static readonly BOTH_UNRESOLVED = new TokenComparison();
+
+  private constructor() {
+  }
+}
 
 /**
  * Represents a special or lazily-evaluated value.
@@ -74,6 +102,21 @@ export class Token {
     return isResolvableObject(value) ? value : new Intrinsic(value);
   }
 
+  /** Compare two strings that might contain Tokens with each other. */
+  public static compareStrings(possibleToken1: string, possibleToken2: string): TokenComparison {
+    const firstIsUnresolved = Token.isUnresolved(possibleToken1);
+    const secondIsUnresolved = Token.isUnresolved(possibleToken2);
+
+    if (firstIsUnresolved && secondIsUnresolved) {
+      return TokenComparison.BOTH_UNRESOLVED;
+    }
+    if (firstIsUnresolved || secondIsUnresolved) {
+      return TokenComparison.ONE_UNRESOLVED;
+    }
+
+    return possibleToken1 === possibleToken2 ? TokenComparison.SAME : TokenComparison.DIFFERENT;
+  }
+
   private constructor() {
   }
 }
@@ -87,6 +130,19 @@ export class Tokenization {
    */
   public static reverseString(s: string): TokenizedStringFragments {
     return TokenMap.instance().splitString(s);
+  }
+
+  /**
+   * Un-encode a string which is either a complete encoded token, or doesn't contain tokens at all
+   *
+   * It's illegal for the string to be a concatenation of an encoded token and something else.
+   */
+  public static reverseCompleteString(s: string): IResolvable | undefined {
+    const fragments = Tokenization.reverseString(s);
+    if (fragments.length !== 1) {
+      throw new Error(`Tokenzation.reverseCompleteString: argument must not be a concatentation, got '${s}'`);
+    }
+    return fragments.firstToken;
   }
 
   /**
@@ -104,6 +160,26 @@ export class Tokenization {
   }
 
   /**
+   * Reverse any value into a Resolvable, if possible
+   *
+   * In case of a string, the string must not be a concatenation.
+   */
+  public static reverse(x: any, options: ReverseOptions = {}): IResolvable | undefined {
+    if (Tokenization.isResolvable(x)) { return x; }
+    if (typeof x === 'string') {
+      if (options.failConcat === false) {
+        // Handle this specially because reverseCompleteString might fail
+        const fragments = Tokenization.reverseString(x);
+        return fragments.length === 1 ? fragments.firstToken : undefined;
+      }
+      return Tokenization.reverseCompleteString(x);
+    }
+    if (Array.isArray(x)) { return Tokenization.reverseList(x); }
+    if (typeof x === 'number') { return Tokenization.reverseNumber(x); }
+    return undefined;
+  }
+
+  /**
    * Resolves an object by evaluating all tokens and removing any undefined or empty objects or arrays.
    * Values can only be primitives, arrays or tokens. Other objects (i.e. with methods) will be rejected.
    *
@@ -111,7 +187,11 @@ export class Tokenization {
    * @param options Prefix key path components for diagnostics.
    */
   public static resolve(obj: any, options: ResolveOptions): any {
-    return resolve(obj, options);
+    return resolve(obj, {
+      scope: options.scope,
+      resolver: options.resolver,
+      preparing: (options.preparing ?? false),
+    });
   }
 
   /**
@@ -125,8 +205,40 @@ export class Tokenization {
     return isResolvableObject(obj);
   }
 
+  /**
+   * Stringify a number directly or lazily if it's a Token. If it is an object (i.e., { Ref: 'SomeLogicalId' }), return it as-is.
+   */
+  public static stringifyNumber(x: number) {
+    // only convert numbers to strings so that Refs, conditions, and other things don't end up synthesizing as [object object]
+
+    if (Token.isUnresolved(x)) {
+      return Lazy.uncachedString({
+        produce: context => {
+          const resolved = context.resolve(x);
+          return typeof resolved !== 'number' ? resolved : `${resolved}`;
+        },
+      });
+    } else {
+      return typeof x !== 'number' ? x : `${x}`;
+    }
+  }
+
   private constructor() {
   }
+}
+
+/**
+ * Options for the 'reverse()' operation
+ */
+export interface ReverseOptions {
+  /**
+   * Fail if the given string is a concatenation
+   *
+   * If `false`, just return `undefined`.
+   *
+   * @default true
+   */
+  readonly failConcat?: boolean;
 }
 
 /**
@@ -147,6 +259,12 @@ export interface ResolveOptions {
    * The resolver to apply to any resolvable tokens found
    */
   readonly resolver: ITokenResolver;
+
+  /**
+   * Whether the resolution is being executed during the prepare phase or not.
+   * @default false
+   */
+  readonly preparing?: boolean;
 }
 
 /**
@@ -161,4 +279,20 @@ export interface EncodingOptions {
 
 export function isResolvableObject(x: any): x is IResolvable {
   return typeof(x) === 'object' && x !== null && typeof x.resolve === 'function';
+}
+
+/**
+ * Call the given function only if all given values are resolved
+ *
+ * Exported as a function since it will be used by TypeScript modules, but
+ * can't be exposed via JSII because of the generics.
+ */
+export function withResolved<A>(a: A, fn: (a: A) => void): void;
+export function withResolved<A, B>(a: A, b: B, fn: (a: A, b: B) => void): void;
+export function withResolved<A, B, C>(a: A, b: B, c: C, fn: (a: A, b: B, c: C) => void): void;
+export function withResolved(...args: any[]) {
+  if (args.length < 2) { return; }
+  const argArray = args.slice(0, args.length - 1);
+  if (argArray.some(Token.isUnresolved)) { return; }
+  args[args.length - 1].apply(arguments, argArray);
 }

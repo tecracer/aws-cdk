@@ -1,7 +1,12 @@
-import cloudwatch = require('@aws-cdk/aws-cloudwatch');
-import cdk = require('@aws-cdk/core');
+import * as cloudwatch from '@aws-cdk/aws-cloudwatch';
+import * as cdk from '@aws-cdk/core';
+import { Construct } from 'constructs';
 import { CfnScalingPolicy } from './applicationautoscaling.generated';
 import { IScalableTarget } from './scalable-target';
+
+// keep this import separate from other imports to reduce chance for merge conflicts with v2-main
+// eslint-disable-next-line no-duplicate-imports, import/order
+import { Construct as CoreConstruct } from '@aws-cdk/core';
 
 /**
  * Base interface for target tracking props
@@ -35,14 +40,24 @@ export interface BaseTargetTrackingProps {
   /**
    * Period after a scale in activity completes before another scale in activity can start.
    *
-   * @default - No scale in cooldown.
+   * @default Duration.seconds(300) for the following scalable targets: ECS services,
+   * Spot Fleet requests, EMR clusters, AppStream 2.0 fleets, Aurora DB clusters,
+   * Amazon SageMaker endpoint variants, Custom resources. For all other scalable
+   * targets, the default value is Duration.seconds(0): DynamoDB tables, DynamoDB
+   * global secondary indexes, Amazon Comprehend document classification endpoints,
+   * Lambda provisioned concurrency
    */
   readonly scaleInCooldown?: cdk.Duration;
 
   /**
    * Period after a scale out activity completes before another scale out activity can start.
    *
-   * @default - No scale out cooldown.
+   * @default Duration.seconds(300) for the following scalable targets: ECS services,
+   * Spot Fleet requests, EMR clusters, AppStream 2.0 fleets, Aurora DB clusters,
+   * Amazon SageMaker endpoint variants, Custom resources. For all other scalable
+   * targets, the default value is Duration.seconds(0): DynamoDB tables, DynamoDB
+   * global secondary indexes, Amazon Comprehend document classification endpoints,
+   * Lambda provisioned concurrency
    */
   readonly scaleOutCooldown?: cdk.Duration;
 }
@@ -104,21 +119,25 @@ export interface TargetTrackingScalingPolicyProps extends BasicTargetTrackingSca
   readonly scalingTarget: IScalableTarget;
 }
 
-export class TargetTrackingScalingPolicy extends cdk.Construct {
+export class TargetTrackingScalingPolicy extends CoreConstruct {
   /**
    * ARN of the scaling policy
    */
   public readonly scalingPolicyArn: string;
 
-  constructor(scope: cdk.Construct, id: string, props: TargetTrackingScalingPolicyProps) {
+  constructor(scope: Construct, id: string, props: TargetTrackingScalingPolicyProps) {
     if ((props.customMetric === undefined) === (props.predefinedMetric === undefined)) {
-      throw new Error(`Exactly one of 'customMetric' or 'predefinedMetric' must be specified.`);
+      throw new Error('Exactly one of \'customMetric\' or \'predefinedMetric\' must be specified.');
+    }
+
+    if (props.customMetric && !props.customMetric.toMetricConfig().metricStat) {
+      throw new Error('Only direct metrics are supported for Target Tracking. Use Step Scaling or supply a Metric object.');
     }
 
     super(scope, id);
 
     const resource = new CfnScalingPolicy(this, 'Resource', {
-      policyName: props.policyName || this.node.uniqueId,
+      policyName: props.policyName || cdk.Names.uniqueId(this),
       policyType: 'TargetTrackingScaling',
       scalingTargetId: props.scalingTarget.scalableTargetId,
       targetTrackingScalingPolicyConfiguration: {
@@ -130,8 +149,8 @@ export class TargetTrackingScalingPolicy extends cdk.Construct {
         } : undefined,
         scaleInCooldown: props.scaleInCooldown && props.scaleInCooldown.toSeconds(),
         scaleOutCooldown: props.scaleOutCooldown && props.scaleOutCooldown.toSeconds(),
-        targetValue: props.targetValue
-      }
+        targetValue: props.targetValue,
+      },
     });
 
     this.scalingPolicyArn = resource.ref;
@@ -140,10 +159,10 @@ export class TargetTrackingScalingPolicy extends cdk.Construct {
 
 function renderCustomMetric(metric?: cloudwatch.IMetric): CfnScalingPolicy.CustomizedMetricSpecificationProperty | undefined {
   if (!metric) { return undefined; }
-  const c = metric.toAlarmConfig();
+  const c = metric.toMetricConfig().metricStat!;
 
-  if (!c.statistic) {
-    throw new Error('Can only use Average, Minimum, Maximum, SampleCount, Sum statistic for target tracking');
+  if (c.statistic.startsWith('p')) {
+    throw new Error(`Cannot use statistic '${c.statistic}' for Target Tracking: only 'Average', 'Minimum', 'Maximum', 'SampleCount', and 'Sum' are supported.`);
   }
 
   return {
@@ -151,7 +170,7 @@ function renderCustomMetric(metric?: cloudwatch.IMetric): CfnScalingPolicy.Custo
     metricName: c.metricName,
     namespace: c.namespace,
     statistic: c.statistic,
-    unit: c.unit
+    unit: c.unitFilter,
   };
 }
 
@@ -159,15 +178,69 @@ function renderCustomMetric(metric?: cloudwatch.IMetric): CfnScalingPolicy.Custo
  * One of the predefined autoscaling metrics
  */
 export enum PredefinedMetric {
+  /**
+   * DYNAMODB_READ_CAPACITY_UTILIZATIO
+   * @see https://docs.aws.amazon.com/autoscaling/application/APIReference/API_PredefinedMetricSpecification.html
+   */
   DYNAMODB_READ_CAPACITY_UTILIZATION = 'DynamoDBReadCapacityUtilization',
+  /**
+   * DYANMODB_WRITE_CAPACITY_UTILIZATION
+   * @see https://docs.aws.amazon.com/autoscaling/application/APIReference/API_PredefinedMetricSpecification.html
+   */
   DYANMODB_WRITE_CAPACITY_UTILIZATION = 'DynamoDBWriteCapacityUtilization',
+  /**
+   * ALB_REQUEST_COUNT_PER_TARGET
+   * @see https://docs.aws.amazon.com/autoscaling/application/APIReference/API_PredefinedMetricSpecification.html
+   */
   ALB_REQUEST_COUNT_PER_TARGET = 'ALBRequestCountPerTarget',
+  /**
+   * RDS_READER_AVERAGE_CPU_UTILIZATION
+   * @see https://docs.aws.amazon.com/autoscaling/application/APIReference/API_PredefinedMetricSpecification.html
+   */
   RDS_READER_AVERAGE_CPU_UTILIZATION = 'RDSReaderAverageCPUUtilization',
+  /**
+   * RDS_READER_AVERAGE_DATABASE_CONNECTIONS
+   * @see https://docs.aws.amazon.com/autoscaling/application/APIReference/API_PredefinedMetricSpecification.html
+   */
   RDS_READER_AVERAGE_DATABASE_CONNECTIONS = 'RDSReaderAverageDatabaseConnections',
+  /**
+   * EC2_SPOT_FLEET_REQUEST_AVERAGE_CPU_UTILIZATION
+   * @see https://docs.aws.amazon.com/autoscaling/application/APIReference/API_PredefinedMetricSpecification.html
+   */
   EC2_SPOT_FLEET_REQUEST_AVERAGE_CPU_UTILIZATION = 'EC2SpotFleetRequestAverageCPUUtilization',
+  /**
+   * EC2_SPOT_FLEET_REQUEST_AVERAGE_NETWORK_IN
+   * @see https://docs.aws.amazon.com/autoscaling/application/APIReference/API_PredefinedMetricSpecification.html
+   */
   EC2_SPOT_FLEET_REQUEST_AVERAGE_NETWORK_IN = 'EC2SpotFleetRequestAverageNetworkIn',
+  /**
+   * EC2_SPOT_FLEET_REQUEST_AVERAGE_NETWORK_OUT
+   * @see https://docs.aws.amazon.com/autoscaling/application/APIReference/API_PredefinedMetricSpecification.html
+   */
   EC2_SPOT_FLEET_REQUEST_AVERAGE_NETWORK_OUT = 'EC2SpotFleetRequestAverageNetworkOut',
+  /**
+   * SAGEMAKER_VARIANT_INVOCATIONS_PER_INSTANCE
+   * @see https://docs.aws.amazon.com/autoscaling/application/APIReference/API_PredefinedMetricSpecification.html
+   */
   SAGEMAKER_VARIANT_INVOCATIONS_PER_INSTANCE = 'SageMakerVariantInvocationsPerInstance',
+  /**
+   * ECS_SERVICE_AVERAGE_CPU_UTILIZATION
+   * @see https://docs.aws.amazon.com/autoscaling/application/APIReference/API_PredefinedMetricSpecification.html
+   */
   ECS_SERVICE_AVERAGE_CPU_UTILIZATION = 'ECSServiceAverageCPUUtilization',
+  /**
+   * ECS_SERVICE_AVERAGE_MEMORY_UTILIZATION
+   * @see https://docs.aws.amazon.com/autoscaling/application/APIReference/API_PredefinedMetricSpecification.html
+   */
   ECS_SERVICE_AVERAGE_MEMORY_UTILIZATION = 'ECSServiceAverageMemoryUtilization',
+  /**
+   * LAMBDA_PROVISIONED_CONCURRENCY_UTILIZATION
+   * @see https://docs.aws.amazon.com/lambda/latest/dg/monitoring-metrics.html#monitoring-metrics-concurrency
+   */
+  LAMBDA_PROVISIONED_CONCURRENCY_UTILIZATION = 'LambdaProvisionedConcurrencyUtilization',
+  /**
+   * KAFKA_BROKER_STORAGE_UTILIZATION
+   * @see https://docs.aws.amazon.com/autoscaling/application/APIReference/API_PredefinedMetricSpecification.html
+   */
+  KAFKA_BROKER_STORAGE_UTILIZATION = 'KafkaBrokerStorageUtilization',
 }

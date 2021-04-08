@@ -1,36 +1,12 @@
-import fs = require('fs');
-import os = require('os');
-import path = require('path');
-import { ArtifactManifest, CloudArtifact } from './cloud-artifact';
-import { CloudFormationStackArtifact } from './cloudformation-artifact';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import * as cxschema from '@aws-cdk/cloud-assembly-schema';
+import { CloudFormationStackArtifact } from './artifacts/cloudformation-artifact';
+import { NestedCloudAssemblyArtifact } from './artifacts/nested-cloud-assembly-artifact';
+import { TreeCloudArtifact } from './artifacts/tree-cloud-artifact';
+import { CloudArtifact } from './cloud-artifact';
 import { topologicalSort } from './toposort';
-import { CLOUD_ASSEMBLY_VERSION, verifyManifestVersion } from './versioning';
-
-/**
- * A manifest which describes the cloud assembly.
- */
-export interface AssemblyManifest {
-  /**
-   * Protocol version
-   */
-  readonly version: string;
-
-  /**
-   * The set of artifacts in this assembly.
-   */
-  readonly artifacts?: { [id: string]: ArtifactManifest };
-
-  /**
-   * Missing context information. If this field has values, it means that the
-   * cloud assembly is not complete and should not be deployed.
-   */
-  readonly missing?: MissingContext[];
-
-  /**
-   * Runtime information.
-   */
-  readonly runtime?: RuntimeInfo;
-}
 
 /**
  * The name of the root manifest file of the assembly.
@@ -59,12 +35,12 @@ export class CloudAssembly {
   /**
    * Runtime information such as module versions used to synthesize this assembly.
    */
-  public readonly runtime: RuntimeInfo;
+  public readonly runtime: cxschema.RuntimeInfo;
 
   /**
    * The raw assembly manifest.
    */
-  public readonly manifest: AssemblyManifest;
+  public readonly manifest: cxschema.AssemblyManifest;
 
   /**
    * Reads a cloud assembly from the specified directory.
@@ -72,11 +48,9 @@ export class CloudAssembly {
    */
   constructor(directory: string) {
     this.directory = directory;
-    this.manifest = JSON.parse(fs.readFileSync(path.join(directory, MANIFEST_FILE), 'UTF-8'));
 
+    this.manifest = cxschema.Manifest.loadAssemblyManifest(path.join(directory, MANIFEST_FILE));
     this.version = this.manifest.version;
-    verifyManifestVersion(this.version);
-
     this.artifacts = this.renderArtifacts();
     this.runtime = this.manifest.runtime || { libraries: { } };
 
@@ -90,39 +64,130 @@ export class CloudAssembly {
    * @param id The artifact ID
    */
   public tryGetArtifact(id: string): CloudArtifact | undefined {
-    return this.stacks.find(a => a.id === id);
+    return this.artifacts.find(a => a.id === id);
   }
 
   /**
    * Returns a CloudFormation stack artifact from this assembly.
+   *
+   * Will only search the current assembly.
+   *
    * @param stackName the name of the CloudFormation stack.
    * @throws if there is no stack artifact by that name
+   * @throws if there is more than one stack with the same stack name. You can
+   * use `getStackArtifact(stack.artifactId)` instead.
    * @returns a `CloudFormationStackArtifact` object.
    */
-  public getStack(stackName: string): CloudFormationStackArtifact {
-    const artifact = this.tryGetArtifact(stackName);
+  public getStackByName(stackName: string): CloudFormationStackArtifact {
+    const artifacts = this.artifacts.filter(a => a instanceof CloudFormationStackArtifact && a.stackName === stackName);
+    if (!artifacts || artifacts.length === 0) {
+      throw new Error(`Unable to find stack with stack name "${stackName}"`);
+    }
+
+    if (artifacts.length > 1) {
+      // eslint-disable-next-line max-len
+      throw new Error(`There are multiple stacks with the stack name "${stackName}" (${artifacts.map(a => a.id).join(',')}). Use "getStackArtifact(id)" instead`);
+    }
+
+    return artifacts[0] as CloudFormationStackArtifact;
+  }
+
+  /**
+   * Returns a CloudFormation stack artifact by name from this assembly.
+   * @deprecated renamed to `getStackByName` (or `getStackArtifact(id)`)
+   */
+  public getStack(stackName: string) {
+    return this.getStackByName(stackName);
+  }
+
+  /**
+   * Returns a CloudFormation stack artifact from this assembly.
+   *
+   * @param artifactId the artifact id of the stack (can be obtained through `stack.artifactId`).
+   * @throws if there is no stack artifact with that id
+   * @returns a `CloudFormationStackArtifact` object.
+   */
+  public getStackArtifact(artifactId: string): CloudFormationStackArtifact {
+    const artifact = this.tryGetArtifact(artifactId);
     if (!artifact) {
-      throw new Error(`Unable to find artifact with id "${stackName}"`);
+      throw new Error(`Unable to find artifact with id "${artifactId}"`);
     }
 
     if (!(artifact instanceof CloudFormationStackArtifact)) {
-      throw new Error(`Artifact ${stackName} is not a CloudFormation stack`);
+      throw new Error(`Artifact ${artifactId} is not a CloudFormation stack`);
     }
 
     return artifact;
   }
 
   /**
+   * Returns a nested assembly artifact.
+   *
+   * @param artifactId The artifact ID of the nested assembly
+   */
+  public getNestedAssemblyArtifact(artifactId: string): NestedCloudAssemblyArtifact {
+    const artifact = this.tryGetArtifact(artifactId);
+    if (!artifact) {
+      throw new Error(`Unable to find artifact with id "${artifactId}"`);
+    }
+
+    if (!(artifact instanceof NestedCloudAssemblyArtifact)) {
+      throw new Error(`Found artifact '${artifactId}' but it's not a nested cloud assembly`);
+    }
+
+    return artifact;
+  }
+
+  /**
+   * Returns a nested assembly.
+   *
+   * @param artifactId The artifact ID of the nested assembly
+   */
+  public getNestedAssembly(artifactId: string): CloudAssembly {
+    return this.getNestedAssemblyArtifact(artifactId).nestedAssembly;
+  }
+
+  /**
+   * Returns the tree metadata artifact from this assembly.
+   * @throws if there is no metadata artifact by that name
+   * @returns a `TreeCloudArtifact` object if there is one defined in the manifest, `undefined` otherwise.
+   */
+  public tree(): TreeCloudArtifact | undefined {
+    const trees = this.artifacts.filter(a => a.manifest.type === cxschema.ArtifactType.CDK_TREE);
+    if (trees.length === 0) {
+      return undefined;
+    } else if (trees.length > 1) {
+      throw new Error(`Multiple artifacts of type ${cxschema.ArtifactType.CDK_TREE} found in manifest`);
+    }
+    const tree = trees[0];
+
+    if (!(tree instanceof TreeCloudArtifact)) {
+      throw new Error('"Tree" artifact is not of expected type');
+    }
+
+    return tree;
+  }
+
+  /**
    * @returns all the CloudFormation stack artifacts that are included in this assembly.
    */
   public get stacks(): CloudFormationStackArtifact[] {
-    const result = new Array<CloudFormationStackArtifact>();
-    for (const a of this.artifacts) {
-      if (a instanceof CloudFormationStackArtifact) {
-        result.push(a);
-      }
+    return this.artifacts.filter(isCloudFormationStackArtifact);
+
+    function isCloudFormationStackArtifact(x: any): x is CloudFormationStackArtifact {
+      return x instanceof CloudFormationStackArtifact;
     }
-    return result;
+  }
+
+  /**
+   * The nested assembly artifacts in this assembly
+   */
+  public get nestedAssemblies(): NestedCloudAssemblyArtifact[] {
+    return this.artifacts.filter(isNestedCloudAssemblyArtifact);
+
+    function isNestedCloudAssemblyArtifact(x: any): x is NestedCloudAssemblyArtifact {
+      return x instanceof NestedCloudAssemblyArtifact;
+    }
   }
 
   private validateDeps() {
@@ -133,12 +198,34 @@ export class CloudAssembly {
 
   private renderArtifacts() {
     const result = new Array<CloudArtifact>();
-    for (const [ name, artifact ] of Object.entries(this.manifest.artifacts || { })) {
-      result.push(CloudArtifact.from(this, name, artifact));
+    for (const [name, artifact] of Object.entries(this.manifest.artifacts || { })) {
+      const cloudartifact = CloudArtifact.fromManifest(this, name, artifact);
+      if (cloudartifact) {
+        result.push(cloudartifact);
+      }
     }
 
     return topologicalSort(result, x => x.id, x => x._dependencyIDs);
   }
+}
+
+/**
+ * Construction properties for CloudAssemblyBuilder
+ */
+export interface CloudAssemblyBuilderProps {
+  /**
+   * Use the given asset output directory
+   *
+   * @default - Same as the manifest outdir
+   */
+  readonly assetOutdir?: string;
+
+  /**
+   * If this builder is for a nested assembly, the parent assembly builder
+   *
+   * @default - This is a root assembly
+   */
+  readonly parentBuilder?: CloudAssemblyBuilder;
 }
 
 /**
@@ -150,28 +237,29 @@ export class CloudAssemblyBuilder {
    */
   public readonly outdir: string;
 
-  private readonly artifacts: { [id: string]: ArtifactManifest } = { };
-  private readonly missing = new Array<MissingContext>();
+  /**
+   * The directory where assets of this Cloud Assembly should be stored
+   */
+  public readonly assetOutdir: string;
+
+  private readonly artifacts: { [id: string]: cxschema.ArtifactManifest } = { };
+  private readonly missing = new Array<cxschema.MissingContext>();
+  private readonly parentBuilder?: CloudAssemblyBuilder;
 
   /**
    * Initializes a cloud assembly builder.
    * @param outdir The output directory, uses temporary directory if undefined
    */
-  constructor(outdir?: string) {
-    this.outdir = outdir || fs.mkdtempSync(path.join(os.tmpdir(), 'cdk.out'));
+  constructor(outdir?: string, props: CloudAssemblyBuilderProps = {}) {
+    this.outdir = determineOutputDirectory(outdir);
+    this.assetOutdir = props.assetOutdir ?? this.outdir;
+    this.parentBuilder = props.parentBuilder;
 
     // we leverage the fact that outdir is long-lived to avoid staging assets into it
     // that were already staged (copying can be expensive). this is achieved by the fact
     // that assets use a source hash as their name. other artifacts, and the manifest itself,
     // will overwrite existing files as needed.
-
-    if (fs.existsSync(this.outdir)) {
-      if (!fs.statSync(this.outdir).isDirectory()) {
-        throw new Error(`${this.outdir} must be a directory`);
-      }
-    } else {
-      fs.mkdirSync(this.outdir);
-    }
+    ensureDirSync(this.outdir);
   }
 
   /**
@@ -179,7 +267,7 @@ export class CloudAssemblyBuilder {
    * @param id The ID of the artifact.
    * @param manifest The artifact manifest
    */
-  public addArtifact(id: string, manifest: ArtifactManifest) {
+  public addArtifact(id: string, manifest: cxschema.ArtifactManifest) {
     this.artifacts[id] = filterUndefined(manifest);
   }
 
@@ -187,8 +275,12 @@ export class CloudAssemblyBuilder {
    * Reports that some context is missing in order for this cloud assembly to be fully synthesized.
    * @param missing Missing context information.
    */
-  public addMissing(missing: MissingContext) {
-    this.missing.push(missing);
+  public addMissing(missing: cxschema.MissingContext) {
+    if (this.missing.every(m => m.key !== missing.key)) {
+      this.missing.push(missing);
+    }
+    // Also report in parent
+    this.parentBuilder?.addMissing(missing);
   }
 
   /**
@@ -196,46 +288,85 @@ export class CloudAssemblyBuilder {
    * `CloudAssembly` object that can be used to inspect the assembly.
    * @param options
    */
-  public build(options: AssemblyBuildOptions = { }): CloudAssembly {
-    const manifest: AssemblyManifest = filterUndefined({
-      version: CLOUD_ASSEMBLY_VERSION,
+  public buildAssembly(options: AssemblyBuildOptions = { }): CloudAssembly {
+
+    // explicitly initializing this type will help us detect
+    // breaking changes. (For example adding a required property will break compilation).
+    let manifest: cxschema.AssemblyManifest = {
+      version: cxschema.Manifest.version(),
       artifacts: this.artifacts,
       runtime: options.runtimeInfo,
-      missing: this.missing.length > 0 ? this.missing : undefined
-    });
+      missing: this.missing.length > 0 ? this.missing : undefined,
+    };
+
+    // now we can filter
+    manifest = filterUndefined(manifest);
 
     const manifestFilePath = path.join(this.outdir, MANIFEST_FILE);
-    fs.writeFileSync(manifestFilePath, JSON.stringify(manifest, undefined, 2));
+    cxschema.Manifest.saveAssemblyManifest(manifest, manifestFilePath);
 
     // "backwards compatibility": in order for the old CLI to tell the user they
     // need a new version, we'll emit the legacy manifest with only "version".
     // this will result in an error "CDK Toolkit >= CLOUD_ASSEMBLY_VERSION is required in order to interact with this program."
-    fs.writeFileSync(path.join(this.outdir, 'cdk.out'), JSON.stringify({ version: CLOUD_ASSEMBLY_VERSION }));
+    fs.writeFileSync(path.join(this.outdir, 'cdk.out'), JSON.stringify({ version: manifest.version }));
 
     return new CloudAssembly(this.outdir);
   }
-}
 
-export interface AssemblyBuildOptions {
   /**
-   * Include the specified runtime information (module versions) in manifest.
-   * @default - if this option is not specified, runtime info will not be included
+   * Creates a nested cloud assembly
    */
-  readonly runtimeInfo?: RuntimeInfo;
+  public createNestedAssembly(artifactId: string, displayName: string) {
+    const directoryName = artifactId;
+    const innerAsmDir = path.join(this.outdir, directoryName);
+
+    this.addArtifact(artifactId, {
+      type: cxschema.ArtifactType.NESTED_CLOUD_ASSEMBLY,
+      properties: {
+        directoryName,
+        displayName,
+      } as cxschema.NestedCloudAssemblyProperties,
+    });
+
+    return new CloudAssemblyBuilder(innerAsmDir, {
+      // Reuse the same asset output directory as the current Casm builder
+      assetOutdir: this.assetOutdir,
+      parentBuilder: this,
+    });
+  }
 }
 
 /**
- * Information about the application's runtime components.
+ * Backwards compatibility for when `RuntimeInfo`
+ * was defined here. This is necessary because its used as an input in the stable
+ * @aws-cdk/core library.
+ *
+ * @deprecated moved to package 'cloud-assembly-schema'
+ * @see core.ConstructNode.synth
  */
-export interface RuntimeInfo {
-  /**
-   * The list of libraries loaded in the application, associated with their versions.
-   */
-  readonly libraries: { [name: string]: string };
+export interface RuntimeInfo extends cxschema.RuntimeInfo {
+
 }
 
 /**
- * Represents a missing piece of context.
+ * Backwards compatibility for when `MetadataEntry`
+ * was defined here. This is necessary because its used as an input in the stable
+ * @aws-cdk/core library.
+ *
+ * @deprecated moved to package 'cloud-assembly-schema'
+ * @see core.ConstructNode.metadata
+ */
+export interface MetadataEntry extends cxschema.MetadataEntry {
+
+}
+
+/**
+ * Backwards compatibility for when `MissingContext`
+ * was defined here. This is necessary because its used as an input in the stable
+ * @aws-cdk/core library.
+ *
+ * @deprecated moved to package 'cloud-assembly-schema'
+ * @see core.Stack.reportMissingContext
  */
 export interface MissingContext {
   /**
@@ -245,17 +376,29 @@ export interface MissingContext {
 
   /**
    * The provider from which we expect this context key to be obtained.
+   *
+   * (This is the old untyped definition, which is necessary for backwards compatibility.
+   * See cxschema for a type definition.)
    */
   readonly provider: string;
 
   /**
    * A set of provider-specific options.
+   *
+   * (This is the old untyped definition, which is necessary for backwards compatibility.
+   * See cxschema for a type definition.)
    */
-  readonly props: {
-    account?: string;
-    region?: string;
-    [key: string]: any;
-  };
+  readonly props: Record<string, any>;
+}
+
+export interface AssemblyBuildOptions {
+  /**
+   * Include the specified runtime information (module versions) in manifest.
+   * @default - if this option is not specified, runtime info will not be included
+   * @deprecated All template modifications that should result from this should
+   * have already been inserted into the template.
+   */
+  readonly runtimeInfo?: RuntimeInfo;
 }
 
 /**
@@ -282,4 +425,21 @@ function filterUndefined(obj: any): any {
 
 function ignore(_x: any) {
   return;
+}
+
+/**
+ * Turn the given optional output directory into a fixed output directory
+ */
+function determineOutputDirectory(outdir?: string) {
+  return outdir ?? fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'cdk.out'));
+}
+
+function ensureDirSync(dir: string) {
+  if (fs.existsSync(dir)) {
+    if (!fs.statSync(dir).isDirectory()) {
+      throw new Error(`${dir} must be a directory`);
+    }
+  } else {
+    fs.mkdirSync(dir, { recursive: true });
+  }
 }

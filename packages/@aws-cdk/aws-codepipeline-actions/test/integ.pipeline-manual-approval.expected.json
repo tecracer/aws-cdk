@@ -2,8 +2,8 @@
   "Resources": {
     "Bucket83908E77": {
       "Type": "AWS::S3::Bucket",
-      "DeletionPolicy": "Retain",
-      "UpdateReplacePolicy": "Retain"
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
     },
     "PipelineRoleD68726F7": {
       "Type": "AWS::IAM::Role",
@@ -14,17 +14,7 @@
               "Action": "sts:AssumeRole",
               "Effect": "Allow",
               "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "codepipeline.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
+                "Service": "codepipeline.amazonaws.com"
               }
             }
           ],
@@ -43,7 +33,7 @@
                 "s3:GetBucket*",
                 "s3:List*",
                 "s3:DeleteObject*",
-                "s3:PutObject*",
+                "s3:PutObject",
                 "s3:Abort*"
               ],
               "Effect": "Allow",
@@ -126,7 +116,6 @@
                   },
                   "S3ObjectKey": "file.zip"
                 },
-                "InputArtifacts": [],
                 "Name": "S3",
                 "OutputArtifacts": [
                   {
@@ -158,9 +147,7 @@
                     "Ref": "PipelineApproveManualApprovalTopicResourceF5A35B20"
                   }
                 },
-                "InputArtifacts": [],
                 "Name": "ManualApproval",
-                "OutputArtifacts": [],
                 "RoleArn": {
                   "Fn::GetAtt": [
                     "PipelineApproveManualApprovalCodePipelineActionRole51D669A5",
@@ -255,7 +242,7 @@
             {
               "Action": [
                 "s3:DeleteObject*",
-                "s3:PutObject*",
+                "s3:PutObject",
                 "s3:Abort*"
               ],
               "Effect": "Allow",

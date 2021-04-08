@@ -1,4 +1,7 @@
-import { Construct } from './construct';
+import * as cxschema from '@aws-cdk/cloud-assembly-schema';
+import * as cxapi from '@aws-cdk/cx-api';
+import { Construct, Node } from 'constructs';
+import { Annotations } from './annotations';
 import { Stack } from './stack';
 import { Token } from './token';
 
@@ -71,39 +74,60 @@ export class ContextProvider {
     if (Object.values(props).find(x => Token.isUnresolved(x))) {
       throw new Error(
         `Cannot determine scope for context provider ${options.provider}.\n` +
-        `This usually happens when one or more of the provider props have unresolved tokens`);
+        'This usually happens when one or more of the provider props have unresolved tokens');
     }
 
     const propStrings = propsToArray(props);
     return {
       key: `${options.provider}:${propStrings.join(':')}`,
-      props
+      props,
     };
   }
 
-  public static getValue(scope: Construct, options: GetContextValueOptions): any {
+  public static getValue(scope: Construct, options: GetContextValueOptions): GetContextValueResult {
     const stack = Stack.of(scope);
 
     if (Token.isUnresolved(stack.account) || Token.isUnresolved(stack.region)) {
       throw new Error(`Cannot retrieve value from context provider ${options.provider} since account/region ` +
-                      `are not specified at the stack level. Either configure "env" with explicit account and region when ` +
-                      `you define your stack, or use the environment variables "CDK_DEFAULT_ACCOUNT" and "CDK_DEFAULT_REGION" ` +
-                      `to inherit environment information from the CLI (not recommended for production stacks)`);
+                      'are not specified at the stack level. Either configure "env" with explicit account and region when ' +
+                      'you define your stack, or use the environment variables "CDK_DEFAULT_ACCOUNT" and "CDK_DEFAULT_REGION" ' +
+                      'to inherit environment information from the CLI (not recommended for production stacks)');
     }
 
     const { key, props } = this.getKey(scope, options);
-    const value = scope.node.tryGetContext(key);
+    const value = Node.of(scope).tryGetContext(key);
+    const providerError = extractProviderError(value);
 
-    // if context is missing, report and return a dummy value
-    if (value === undefined) {
-      stack.reportMissingContext({ key, props, provider: options.provider, });
-      return options.dummyValue;
+    // if context is missing or an error occurred during context retrieval,
+    // report and return a dummy value.
+    if (value === undefined || providerError !== undefined) {
+      stack.reportMissingContext({
+        key,
+        provider: options.provider as cxschema.ContextProvider,
+        props: props as cxschema.ContextQueryProperties,
+      });
+
+      if (providerError !== undefined) {
+        Annotations.of(scope).addError(providerError);
+      }
+
+      return { value: options.dummyValue };
     }
 
-    return value;
+    return { value };
   }
 
   private constructor() { }
+}
+
+/**
+ * If the context value represents an error, return the error message
+ */
+function extractProviderError(value: any): string | undefined {
+  if (typeof value === 'object' && value !== null) {
+    return value[cxapi.PROVIDER_ERROR_KEY];
+  }
+  return undefined;
 }
 
 /**
@@ -120,6 +144,11 @@ function propsToArray(props: {[key: string]: any}, keyPrefix = ''): string[] {
   const ret: string[] = [];
 
   for (const key of Object.keys(props)) {
+    // skip undefined values
+    if (props[key] === undefined) {
+      continue;
+    }
+
     switch (typeof props[key]) {
       case 'object': {
         ret.push(...propsToArray(props[key], `${keyPrefix}${key}.`));

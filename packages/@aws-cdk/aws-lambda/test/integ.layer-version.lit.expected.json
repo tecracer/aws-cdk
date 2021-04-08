@@ -1,25 +1,11 @@
 {
-  "Parameters": {
-    "MyLayerCodeS3Bucket20DB8EB9": {
-      "Type": "String",
-      "Description": "S3 bucket for asset \"aws-cdk-layer-version-1/MyLayer/Code\""
-    },
-    "MyLayerCodeS3VersionKeyA45254EC": {
-      "Type": "String",
-      "Description": "S3 key for asset version \"aws-cdk-layer-version-1/MyLayer/Code\""
-    },
-    "MyLayerCodeArtifactHashCCFB62E9": {
-      "Type": "String",
-      "Description": "Artifact hash for asset \"aws-cdk-layer-version-1/MyLayer/Code\""
-    }
-  },
   "Resources": {
     "MyLayer38944FA5": {
       "Type": "AWS::Lambda::LayerVersion",
       "Properties": {
         "Content": {
           "S3Bucket": {
-            "Ref": "MyLayerCodeS3Bucket20DB8EB9"
+            "Ref": "AssetParameters8811a2632ac5564a08fd269e159298f7e497f259578b0dc5e927a1f48ab24d34S3BucketB47CCF1E"
           },
           "S3Key": {
             "Fn::Join": [
@@ -32,7 +18,7 @@
                       "Fn::Split": [
                         "||",
                         {
-                          "Ref": "MyLayerCodeS3VersionKeyA45254EC"
+                          "Ref": "AssetParameters8811a2632ac5564a08fd269e159298f7e497f259578b0dc5e927a1f48ab24d34S3VersionKey80D7B84B"
                         }
                       ]
                     }
@@ -45,7 +31,7 @@
                       "Fn::Split": [
                         "||",
                         {
-                          "Ref": "MyLayerCodeS3VersionKeyA45254EC"
+                          "Ref": "AssetParameters8811a2632ac5564a08fd269e159298f7e497f259578b0dc5e927a1f48ab24d34S3VersionKey80D7B84B"
                         }
                       ]
                     }
@@ -56,7 +42,7 @@
           }
         },
         "CompatibleRuntimes": [
-          "nodejs8.10"
+          "nodejs10.x"
         ],
         "Description": "A layer to test the L2 construct",
         "LicenseInfo": "Apache-2.0"
@@ -83,17 +69,7 @@
               "Action": "sts:AssumeRole",
               "Effect": "Allow",
               "Principal": {
-                "Service": {
-                  "Fn::Join": [
-                    "",
-                    [
-                      "lambda.",
-                      {
-                        "Ref": "AWS::URLSuffix"
-                      }
-                    ]
-                  ]
-                }
+                "Service": "lambda.amazonaws.com"
               }
             }
           ],
@@ -128,7 +104,7 @@
             "Arn"
           ]
         },
-        "Runtime": "nodejs8.10",
+        "Runtime": "nodejs10.x",
         "Layers": [
           {
             "Ref": "MyLayer38944FA5"
@@ -138,6 +114,20 @@
       "DependsOn": [
         "MyLayeredLambdaServiceRole1A7DC118"
       ]
+    }
+  },
+  "Parameters": {
+    "AssetParameters8811a2632ac5564a08fd269e159298f7e497f259578b0dc5e927a1f48ab24d34S3BucketB47CCF1E": {
+      "Type": "String",
+      "Description": "S3 bucket for asset \"8811a2632ac5564a08fd269e159298f7e497f259578b0dc5e927a1f48ab24d34\""
+    },
+    "AssetParameters8811a2632ac5564a08fd269e159298f7e497f259578b0dc5e927a1f48ab24d34S3VersionKey80D7B84B": {
+      "Type": "String",
+      "Description": "S3 key for asset version \"8811a2632ac5564a08fd269e159298f7e497f259578b0dc5e927a1f48ab24d34\""
+    },
+    "AssetParameters8811a2632ac5564a08fd269e159298f7e497f259578b0dc5e927a1f48ab24d34ArtifactHash70E274C4": {
+      "Type": "String",
+      "Description": "Artifact hash for asset \"8811a2632ac5564a08fd269e159298f7e497f259578b0dc5e927a1f48ab24d34\""
     }
   }
 }
